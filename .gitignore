@@ -1,2 +1,5 @@
 _shot.cjs
 _shot.png
+
+__pycache__/
+*.pyc
