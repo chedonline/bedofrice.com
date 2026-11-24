@@ -1,0 +1,267 @@
+<!doctype html>
+<!-- Bed of Rice: concept screens (solo + co-op). Open with #solo or #coop. Rendered to PNG by _concept/shot.cjs -->
+<html><head><meta charset="utf-8"><title>Bed of Rice concept</title>
+<style>
+  html,body{margin:0;background:#1d1a17}
+  svg{display:block;width:1920px;height:1080px}
+  text{font-family:'Arial Rounded MT Bold','Segoe UI Rounded','Segoe UI',sans-serif}
+</style></head><body>
+<svg id="s" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg"></svg>
+<script>
+const C = {
+  bg:'#F5EADB', noren:'#2F3B5C', norenDark:'#25304C', wood:'#E8C795', woodEdge:'#C9975D', woodDeep:'#9A6A3B', woodMid:'#B98450',
+  rice:'#FFFDF8', riceLine:'#E7DCCB', grain:'#EFE6D8', ink:'#2A2522', quiet:'#7B6A5C',
+  salmon:'#F7996F', salmonS:'#FFD9C6', tuna:'#D8475B', tunaS:'#F2949F', egg:'#F6C845', eggS:'#FBE08A', nori:'#22302A',
+  green:'#86BC5C', greenD:'#5E9440', soy:'#6A3D24', ikura:'#FF7B30', blush:'#FFB2A6',
+  hot:'#F2683A', warm:'#F0B23A', cold:'#6FA6DA', paper:'#FFFCF4', gold:'#F2B53C', p1:'#EF5F93', p2:'#22A396',
+  btnA:'#5DB04A', btnB:'#E0524A', btnX:'#4A86D8', btnY:'#E9B832'
+};
+const T = (x,y,s,o={}) => `<text x="${x}" y="${y}" font-size="${o.size||22}" fill="${o.fill||C.ink}" text-anchor="${o.anchor||'start'}" font-weight="${o.weight||400}" ${o.extra||''}>${s}</text>`;
+
+/* ---------- faces ---------- */
+function face(cx, cy, s=1, mood='happy'){
+  const e = 10*s, r = 3.8*s;
+  let eyes;
+  if (mood === 'sleep') eyes = `<path d="M${cx-e-5*s} ${cy} q${5*s} ${5*s} ${10*s} 0 M${cx+e-5*s} ${cy} q${5*s} ${5*s} ${10*s} 0" stroke="${C.ink}" stroke-width="${2.6*s}" fill="none" stroke-linecap="round"/>`;
+  else eyes = `<circle cx="${cx-e}" cy="${cy}" r="${r}" fill="${C.ink}"/><circle cx="${cx+e}" cy="${cy}" r="${r}" fill="${C.ink}"/><circle cx="${cx-e+1.3*s}" cy="${cy-1.4*s}" r="${1.2*s}" fill="#fff"/><circle cx="${cx+e+1.3*s}" cy="${cy-1.4*s}" r="${1.2*s}" fill="#fff"/>`;
+  const blush = `<ellipse cx="${cx-e-9*s}" cy="${cy+7*s}" rx="${6*s}" ry="${3.4*s}" fill="${C.blush}" opacity=".85"/><ellipse cx="${cx+e+9*s}" cy="${cy+7*s}" rx="${6*s}" ry="${3.4*s}" fill="${C.blush}" opacity=".85"/>`;
+  let mouth;
+  if (mood === 'cold') mouth = `<path d="M${cx-6*s} ${cy+9*s} l${3*s} ${-2*s} l${3*s} ${2*s} l${3*s} ${-2*s} l${3*s} ${2*s}" stroke="${C.ink}" stroke-width="${2*s}" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
+  else if (mood === 'sleep') mouth = `<ellipse cx="${cx}" cy="${cy+9*s}" rx="${2.6*s}" ry="${2*s}" fill="${C.ink}"/>`;
+  else mouth = `<path d="M${cx-5*s} ${cy+7*s} q${5*s} ${5*s} ${10*s} 0" stroke="${C.ink}" stroke-width="${2.2*s}" fill="none" stroke-linecap="round"/>`;
+  return blush + eyes + mouth;
+}
+
+/* ---------- toppings drawn as blankets on a bed (origin = bed centre, frame top at y=0) ---------- */
+function stripes(col, x0, x1, y0, h){ let s=''; for (let x=x0; x<=x1; x+=34) s += `<path d="M${x} ${y0} q14 ${h/2} 4 ${h}" stroke="${col}" stroke-width="6" fill="none" stroke-linecap="round" opacity=".9"/>`; return s; }
+function blanket(kind){
+  if (kind === 'tamago') return `<rect x="-104" y="-96" width="208" height="54" rx="16" fill="${C.egg}"/><rect x="-104" y="-96" width="208" height="16" rx="8" fill="${C.eggS}" opacity=".7"/><rect x="-20" y="-102" width="40" height="64" rx="6" fill="${C.nori}"/>`;
+  const fill = kind === 'tuna' ? C.tuna : C.salmon, st = kind === 'tuna' ? C.tunaS : C.salmonS;
+  return `<path d="M-112 -78 Q0 -112 112 -78 L118 -46 Q0 -26 -118 -46 Z" fill="${fill}"/>` + `<g clip-path="url(#blk)">${stripes(st,-96,100,-100,64)}</g>`;
+}
+function finish(kind){
+  if (kind === 'soy') return `<path d="M52 -118 q-12 18 -12 26 a12 12 0 0 0 24 0 q0 -8 -12 -26z" fill="${C.soy}"/><circle cx="48" cy="-92" r="3" fill="#fff" opacity=".6"/>`;
+  if (kind === 'wasabi') return `<path d="M-74 -96 q-6 -22 14 -26 q20 -2 18 20 q-2 12 -32 6z" fill="${C.green}"/>`;
+  return '';
+}
+function steam(){ let s=''; [-50,0,50].forEach((x,i)=>{ s += `<path d="M${x} -150 q-12 -16 0 -32 q12 -16 0 -32" stroke="#fff" stroke-width="7" fill="none" stroke-linecap="round" opacity="${.85-i*.1}"/>`; }); return s; }
+function snow(){ return `<g stroke="${C.cold}" stroke-width="4" stroke-linecap="round"><path d="M-132 -60 l-10 -6 M-132 -40 l-14 0 M-132 -20 l-10 6 M132 -60 l10 -6 M132 -40 l14 0 M132 -20 l10 6"/></g><g transform="translate(96,-150)" stroke="${C.cold}" stroke-width="4" stroke-linecap="round"><path d="M0 -16V16M-14 -8L14 8M-14 8L14 -8"/></g>`; }
+const GRAINS = [[-80,-30,20],[-52,-46,-30],[-22,-24,15],[10,-48,-10],[40,-28,35],[72,-44,-25],[86,-18,10],[-90,-10,-15],[-40,-8,30],[30,-6,-20],[60,-12,5],[-8,-40,40]];
+function grains(){ return GRAINS.map(([x,y,r]) => `<ellipse cx="${x}" cy="${y}" rx="9" ry="4.5" transform="rotate(${r} ${x} ${y})" fill="${C.grain}"/>`).join(''); }
+
+function bed(o){
+  // o: {rice, main, fin, warmth:'hot'|'warm'|'cold', marked, cursor:[{col,label}], tag}
+  let g = '';
+  if (o.warmth === 'hot' && o.rice) g += steam();
+  if (o.marked) g += `<rect x="-140" y="-176" width="280" height="250" rx="26" fill="${C.gold}" opacity=".18" stroke="${C.gold}" stroke-width="5" stroke-dasharray="14 10"/>`;
+  // headboard
+  g += `<rect x="-116" y="-142" width="232" height="150" rx="30" fill="${C.woodMid}"/><rect x="-98" y="-126" width="196" height="120" rx="20" fill="${C.wood}" opacity=".55"/>`;
+  // legs + frame
+  g += `<rect x="-118" y="26" width="16" height="30" rx="5" fill="${C.woodDeep}"/><rect x="102" y="26" width="16" height="30" rx="5" fill="${C.woodDeep}"/>`;
+  if (o.rice){
+    g += `<rect x="-112" y="-72" width="224" height="80" rx="34" fill="${o.warmth==='cold'?'#EEF4FB':C.rice}" stroke="${C.riceLine}" stroke-width="2"/>` + grains();
+    if (o.main) { g += blanket(o.main); g += face(0, -20, 1, o.warmth==='cold'?'cold':'sleep'); }
+    else g += face(0, -34, 1.1, o.warmth==='cold'?'cold':'happy');
+    if (o.fin) g += finish(o.fin);
+  } else {
+    g += `<rect x="-112" y="-60" width="224" height="68" rx="30" fill="none" stroke="${C.woodEdge}" stroke-width="4" stroke-dasharray="12 10"/>` + T(0,-18,'needs rice',{size:22,anchor:'middle',fill:C.quiet});
+  }
+  g += `<rect x="-128" y="0" width="256" height="32" rx="12" fill="${C.woodDeep}"/>`;
+  if (o.warmth === 'cold' && o.rice) g += snow();
+  // warmth pips
+  if (o.rice){
+    const lv = {hot:3, warm:2, cold:1}[o.warmth], col = {hot:C.hot, warm:C.warm, cold:C.cold}[o.warmth];
+    for (let i=0;i<3;i++) g += `<circle cx="${-26+i*26}" cy="84" r="9" fill="${i<lv?col:'#E3D6C4'}"/>`;
+    g += T(0,118,o.warmth.toUpperCase(),{size:20,anchor:'middle',fill:col,weight:700});
+  }
+  if (o.tag) g += `<g transform="translate(0,-208)"><rect x="-92" y="-24" width="184" height="40" rx="20" fill="${o.tag.col}"/>${T(0,4,o.tag.text,{size:21,anchor:'middle',fill:'#fff',weight:700})}</g>`;
+  (o.cursor||[]).forEach((c,i) => {
+    const x = (o.cursor.length>1) ? (i?46:-46) : 0;
+    g += `<g transform="translate(${x},${o.tag?-252:-212})"><path d="M-22 -18 L22 -18 L0 12 Z" fill="${c.col}" stroke="#fff" stroke-width="4" stroke-linejoin="round"/>${c.label?`<rect x="-24" y="-56" width="48" height="30" rx="10" fill="${c.col}"/>`+T(0,-34,c.label,{size:19,anchor:'middle',fill:'#fff',weight:700}):''}</g>`;
+  });
+  return g;
+}
+const place = (cx, y, s, inner) => `<g transform="translate(${cx},${y}) scale(${s})">${inner}</g>`;
+
+/* ---------- topping icons for cards (origin = icon centre) ---------- */
+function icon(k){
+  switch(k){
+    case 'tuna': return `<path d="M-56 -16 Q0 -40 56 -16 L60 14 Q0 30 -60 14 Z" fill="${C.tuna}"/>${stripes(C.tunaS,-40,44,-34,48)}` + face(0,2,.8,'happy');
+    case 'salmon': return `<path d="M-56 -16 Q0 -40 56 -16 L60 14 Q0 30 -60 14 Z" fill="${C.salmon}"/>${stripes(C.salmonS,-40,44,-34,48)}` + face(0,2,.8,'happy');
+    case 'cucumber': return `<circle cx="-26" cy="0" r="26" fill="${C.greenD}"/><circle cx="-26" cy="0" r="19" fill="#DDEFC4"/><circle cx="26" cy="4" r="26" fill="${C.greenD}"/><circle cx="26" cy="4" r="19" fill="#DDEFC4"/>` + face(26,2,.6,'happy');
+    case 'wasabi': return `<path d="M-40 18 q-14 -46 30 -52 q46 -2 46 40 q-4 26 -76 12z" fill="${C.green}"/><path d="M-6 -40 l10 -16 l6 16" fill="${C.green}"/>` + face(0,-2,.9,'happy') + `<path d="M34 -40 l10 -10 M40 -26 l14 -4" stroke="${C.hot}" stroke-width="4" stroke-linecap="round"/>`;
+    case 'ikura': return [[-24,-8],[0,-14],[24,-8],[-12,12],[12,12],[0,0]].map(([x,y])=>`<circle cx="${x}" cy="${y}" r="15" fill="${C.ikura}"/><circle cx="${x-5}" cy="${y-5}" r="4" fill="#fff" opacity=".7"/>`).join('');
+    case 'rice': return `<rect x="-52" y="-30" width="104" height="60" rx="28" fill="${C.rice}" stroke="${C.riceLine}" stroke-width="2"/>` + face(0,-4,.8,'happy');
+    case 'soy': return `<path d="M0 -40 q-26 34 -26 50 a26 26 0 0 0 52 0 q0 -16 -26 -50z" fill="${C.soy}"/><circle cx="-8" cy="8" r="5" fill="#fff" opacity=".5"/>`;
+    case 'tamago': return `<rect x="-54" y="-24" width="108" height="48" rx="14" fill="${C.egg}"/><rect x="-12" y="-30" width="24" height="60" rx="4" fill="${C.nori}"/>`;
+  }
+}
+const TYPE = {tuna:'MAIN', salmon:'MAIN', cucumber:'MAIN', tamago:'MAIN', wasabi:'FINISH', soy:'FINISH', ikura:'FINISH', rice:'RICE'};
+const NAME = {tuna:'Tuna', salmon:'Salmon', cucumber:'Cucumber', tamago:'Tamago', wasabi:'Wasabi', soy:'Soy', ikura:'Ikura', rice:'Sushi rice'};
+const TASTE = {tuna:4, salmon:4, cucumber:2, tamago:3, wasabi:2, soy:1, ikura:3, rice:2};
+function card(x, y, k, o={}){
+  const w=150, h=190, sel=o.sel, col=o.col||C.gold;
+  return `<g transform="translate(${x},${y-(sel?34:0)}) rotate(${o.rot||0} ${w/2} ${h})">
+    ${sel?`<rect x="-8" y="-8" width="${w+16}" height="${h+16}" rx="22" fill="${col}" opacity=".35"/>`:''}
+    <rect width="${w}" height="${h}" rx="16" fill="${C.paper}" stroke="${sel?col:'#DCCDB8'}" stroke-width="${sel?5:3}"/>
+    <rect x="10" y="10" width="${w-20}" height="104" rx="10" fill="${C.bg}"/>
+    <g transform="translate(${w/2},64)">${icon(k)}</g>
+    <circle cx="24" cy="24" r="17" fill="${C.gold}"/>${T(24,31,TASTE[k],{size:20,anchor:'middle',fill:'#fff',weight:700})}
+    ${T(w/2,144,NAME[k],{size:22,anchor:'middle',weight:700})}
+    ${T(w/2,172,TYPE[k],{size:15,anchor:'middle',fill:C.quiet,extra:'letter-spacing="2"'})}
+  </g>`;
+}
+
+/* ---------- customers + tickets ---------- */
+function customer(k){
+  switch(k){
+    case 'onigiri': return `<path d="M0 -34 Q30 -6 30 18 Q30 30 0 30 Q-30 30 -30 18 Q-30 -6 0 -34z" fill="${C.rice}" stroke="${C.riceLine}" stroke-width="2"/><rect x="-16" y="12" width="32" height="18" rx="3" fill="${C.nori}"/>` + face(0,-2,.7,'happy');
+    case 'cat': return `<path d="M-26 -14 L-22 -36 L-8 -22 Z M26 -14 L22 -36 L8 -22 Z" fill="#F2A65A"/><circle cx="0" cy="0" r="28" fill="#F2A65A"/>` + face(0,0,.7,'happy');
+    case 'bun': return `<ellipse cx="0" cy="4" rx="32" ry="26" fill="#F3E2C4"/><path d="M-10 -20 q10 -10 20 0" stroke="#D9BE93" stroke-width="4" fill="none"/>` + face(0,4,.7,'sleep');
+    case 'frog': return `<circle cx="-14" cy="-22" r="11" fill="${C.green}"/><circle cx="14" cy="-22" r="11" fill="${C.green}"/><ellipse cx="0" cy="2" rx="32" ry="24" fill="${C.green}"/>` + face(0,0,.7,'happy');
+  }
+}
+function ticket(x, y, o){
+  const w=240, h=196;
+  let dots=''; for (let i=0;i<o.max;i++) dots += `<circle cx="${30+i*26}" cy="${h-28}" r="9" fill="${i<o.left?(o.left<=2?C.hot:C.p2):'#E3D6C4'}"/>`;
+  return `<g transform="translate(${x},${y}) rotate(${o.rot||0} ${w/2} 0)">
+    <line x1="${w/2}" y1="-14" x2="${w/2}" y2="6" stroke="${C.woodDeep}" stroke-width="3"/><circle cx="${w/2}" cy="-14" r="7" fill="${C.woodDeep}"/>
+    ${o.sel?`<rect x="-8" y="-6" width="${w+16}" height="${h+14}" rx="18" fill="${C.p1}" opacity=".25"/>`:''}
+    <rect width="${w}" height="${h}" rx="12" fill="${C.paper}" stroke="${o.sel?C.p1:'#DCCDB8'}" stroke-width="${o.sel?5:2}"/>
+    <g transform="translate(46,58)">${customer(o.cust)}</g>
+    ${T(90,52,o.title,{size:24,weight:700})}
+    ${o.sub?T(90,80,o.sub,{size:18,fill:C.quiet}):''}
+    ${T(20,128,o.req,{size:20})}
+    ${dots}
+    ${T(w-16,h-20,o.left+' left',{size:16,anchor:'end',fill:o.left<=2?C.hot:C.quiet,weight:700})}
+  </g>`;
+}
+
+/* ---------- tools ---------- */
+function tool(k){
+  switch(k){
+    case 'cooker': return `<rect x="-26" y="-14" width="52" height="38" rx="14" fill="#fff" stroke="#CFC3B2" stroke-width="2"/><path d="M-28 -14 q28 -22 56 0z" fill="#E86B5A"/><circle cx="0" cy="-24" r="5" fill="#E86B5A"/>` + face(0,4,.55,'happy');
+    case 'torch': return `<rect x="-8" y="-2" width="16" height="30" rx="5" fill="#5B6B85"/><path d="M0 -34 q-16 18 -6 30 q6 6 12 0 q10 -12 -6 -30z" fill="#4AA3F0"/><path d="M0 -20 q-6 8 -2 14 q3 3 5 0 q4 -6 -3 -14z" fill="#BFE3FF"/>`;
+    case 'cat': return `<path d="M-20 -10 L-18 -30 L-6 -18 Z M20 -10 L18 -30 L6 -18 Z" fill="#fff" stroke="#CFC3B2" stroke-width="2"/><ellipse cx="0" cy="4" rx="24" ry="22" fill="#fff" stroke="#CFC3B2" stroke-width="2"/><path d="M20 -6 q14 -10 10 -26" stroke="#CFC3B2" stroke-width="8" stroke-linecap="round" fill="none"/>` + face(0,2,.55,'happy') + `<circle cx="0" cy="22" r="5" fill="${C.gold}"/>`;
+    case 'mat': return `<rect x="-28" y="-22" width="56" height="44" rx="6" fill="#C8B27A"/>` + [-18,-6,6,18].map(x=>`<line x1="${x}" y1="-22" x2="${x}" y2="22" stroke="#9E8650" stroke-width="3"/>`).join('');
+  }
+  return '';
+}
+function toolSlots(x, y, list, label, col){
+  let g = T(x, y, label, {size:20, fill:col||C.quiet, weight:700});
+  list.forEach((k,i) => {
+    const sx = x + i*64 + 28, sy = y + 44;
+    g += k ? `<circle cx="${sx}" cy="${sy}" r="28" fill="${C.paper}" stroke="#DCCDB8" stroke-width="2"/><g transform="translate(${sx},${sy}) scale(.85)">${tool(k)}</g>`
+           : `<circle cx="${sx}" cy="${sy}" r="28" fill="none" stroke="#CDBBA3" stroke-width="3" stroke-dasharray="6 6"/>`;
+  });
+  return g;
+}
+
+/* ---------- chrome ---------- */
+function noren(){
+  let g = `<rect width="1920" height="100" fill="${C.noren}"/>`;
+ g += `<rect width="1920" height="10" fill="${C.woodDeep}"/>`;
+  return g;
+}
+function hud(day, tips, target, stars, ticks){
+  let g = noren();
+  g += T(40,62,'Bed of Rice',{size:34,fill:C.bg,weight:700}) + T(262,62,day,{size:24,fill:'#C9D0E3'});
+  const bx=700, bw=520, f=Math.min(1,tips/target);
+  g += T(bx,44,'TIPS',{size:16,fill:'#C9D0E3',extra:'letter-spacing="3"'}) + `<rect x="${bx}" y="54" width="${bw}" height="24" rx="12" fill="${C.norenDark}"/><rect x="${bx}" y="54" width="${bw*f}" height="24" rx="12" fill="${C.gold}"/>` + T(bx+bw+20,76,`${tips} / ${target}`,{size:28,fill:C.bg,weight:700});
+  let st=''; for(let i=0;i<3;i++){ const sx=1440+i*44; st+=`<path transform="translate(${sx},58) scale(1.1)" d="M0 -16 L5 -5 L17 -5 L7 2 L11 14 L0 7 L-11 14 L-7 2 L-17 -5 L-5 -5 Z" fill="${i<stars?C.gold:'#4A5675'}"/>`; }
+  g += st;
+  g += `<g transform="translate(1640,58)"><path d="M-14 8 q0 -24 14 -24 q14 0 14 24 z" fill="${C.gold}"/><rect x="-18" y="8" width="36" height="5" rx="2" fill="${C.gold}"/><circle cx="0" cy="17" r="4" fill="${C.gold}"/></g>` + T(1668,70,ticks,{size:26,fill:C.bg,weight:700});
+  return g;
+}
+function counter(){
+  return `<rect x="0" y="530" width="1920" height="260" fill="${C.wood}"/><rect x="0" y="530" width="1920" height="8" fill="#F3DAB2"/>
+  ${[0,1,2,3,4,5,6,7].map(i=>`<path d="M${i*260+40} 570 q120 10 240 0" stroke="#DDB880" stroke-width="3" fill="none" opacity=".6"/>`).join('')}
+  <rect x="0" y="790" width="1920" height="30" fill="${C.woodEdge}"/>`;
+}
+function rail(){ return `<line x1="120" y1="122" x2="1480" y2="122" stroke="${C.woodDeep}" stroke-width="5" stroke-linecap="round"/>`; }
+function btn(x, y, k, label){
+  const col = {A:C.btnA,B:C.btnB,X:C.btnX,Y:C.btnY}[k];
+  const glyph = col ? `<circle cx="${x}" cy="${y}" r="17" fill="${col}"/>${T(x,y+7,k,{size:19,anchor:'middle',fill:'#fff',weight:700})}`
+                    : `<rect x="${x-26}" y="${y-15}" width="52" height="30" rx="10" fill="#4A4038"/>${T(x,y+6,k,{size:16,anchor:'middle',fill:'#fff',weight:700})}`;
+  return glyph + T(x+(col?26:34), y+7, label, {size:20, fill:'#EDE3D4'});
+}
+function scorePanel(x, y, o){
+  return `<g transform="translate(${x},${y})">
+    <rect width="320" height="${o.h||300}" rx="20" fill="${C.paper}" stroke="#DCCDB8" stroke-width="3"/>
+    ${T(24,40,o.head,{size:18,fill:C.quiet,extra:'letter-spacing="2"'})}
+    ${T(24,72,o.to,{size:22,weight:700})}
+    <rect x="24" y="92" width="120" height="64" rx="14" fill="#E9F1FB"/>${T(84,120,'TASTE',{size:14,anchor:'middle',fill:C.btnX,extra:'letter-spacing="2"'})}${T(84,148,o.taste,{size:30,anchor:'middle',fill:C.btnX,weight:700})}
+    ${T(160,136,'×',{size:34,anchor:'middle',fill:C.quiet})}
+    <rect x="176" y="92" width="120" height="64" rx="14" fill="#FDECE6"/>${T(236,120,'MULT',{size:14,anchor:'middle',fill:C.hot,extra:'letter-spacing="2"'})}${T(236,148,o.mult,{size:30,anchor:'middle',fill:C.hot,weight:700})}
+    ${o.lines.map((l,i)=>T(24,190+i*28,l,{size:19,fill:C.quiet})).join('')}
+    ${T(296,(o.h||300)-22,'= '+o.tips+' tips',{size:32,anchor:'end',fill:C.ink,weight:700})}
+  </g>`;
+}
+const defs = `<defs><clipPath id="blk"><path d="M-112 -78 Q0 -112 112 -78 L118 -46 Q0 -26 -118 -46 Z"/></clipPath></defs>`;
+
+/* ---------- SOLO ---------- */
+function solo(){
+  let g = defs + `<rect width="1920" height="1080" fill="${C.bg}"/>`;
+  g += hud('Day 2 · Lunch', 340, 500, 2, '14 ticks left') + rail();
+  g += ticket(150,140,{cust:'onigiri', title:'Mr Onigiri', sub:'regular', req:'2 of anything', max:5, left:2, sel:true, rot:-2});
+  g += ticket(450,140,{cust:'cat', title:'Mochi', sub:'exact order ★', req:'Tuna with soy', max:5, left:4, rot:1.5});
+  g += ticket(750,140,{cust:'frog', title:'Kero', req:'Something spicy', max:5, left:3, rot:-1});
+  g += ticket(1050,140,{cust:'bun', title:'Nana Bao', req:'3 plates, no fish', max:6, left:6, rot:2});
+  g += `<g transform="translate(1540,110)"><rect width="340" height="150" rx="20" fill="${C.paper}" stroke="#DCCDB8" stroke-width="3"/>${toolSlots(22,40,['cooker','torch','cat',null,null],'KITCHEN TOOLS')}</g>`;
+  g += `<g transform="translate(1540,284)"><rect width="340" height="70" rx="20" fill="${C.paper}" stroke="#DCCDB8" stroke-width="3"/>${T(22,44,'Pantry 14',{size:22,weight:700})}${T(318,44,'Discards 2',{size:22,anchor:'end',fill:C.quiet})}</g>`;
+  g += counter();
+  const y = 660;
+  g += place(290,y,1,bed({rice:true, main:'salmon', warmth:'hot', marked:true, tag:{text:'Flight +3', col:C.gold}}));
+  g += place(560,y,1,bed({rice:true, main:'salmon', fin:'soy', warmth:'warm', marked:true, tag:{text:'Classic +2', col:C.gold}, cursor:[{col:C.p1}]}));
+  g += place(830,y,1,bed({rice:true, warmth:'hot'}));
+  g += place(1100,y,1,bed({rice:false}));
+  g += place(1370,y,1,bed({rice:true, main:'tamago', warmth:'cold'}));
+  g += scorePanel(1560,400,{head:'SERVE PREVIEW', to:'2 beds → Mr Onigiri', taste:14, mult:6, lines:['Base 1','Classic +2 (salmon + soy)','Flight +3 (2 salmon)'], tips:84, h:330});
+  // hand
+  const hand = ['tuna','cucumber','wasabi','ikura','rice'];
+  hand.forEach((k,i) => { g += card(560 + i*166, 836, k, {sel:i===0, col:C.p1, rot:(i-2)*2}); });
+  g += btn(500,930,'LB','') + btn(1440,930,'RB','');
+  g += `<rect x="0" y="1036" width="1920" height="44" fill="#2A2420"/>`;
+  g += btn(60,1058,'LB','') + btn(124,1058,'RB','Topping') + btn(330,1058,'A','Place') + btn(470,1058,'Y','Mark bed') + btn(660,1058,'X','Serve marked') + btn(880,1058,'B','Undo') + btn(1010,1058,'View','Discard') + btn(1210,1058,'LT','Tools & combos');
+  g += T(1880,1064,'every action = 1 tick',{size:20,anchor:'end',fill:'#A8998A'});
+  return g;
+}
+
+/* ---------- CO-OP ---------- */
+function coop(){
+  let g = defs + `<rect width="1920" height="1080" fill="${C.bg}"/>`;
+  g += hud('Day 4 · Dinner · Co-op', 610, 750, 3, '9 ticks left') + rail();
+  g += ticket(150,140,{cust:'cat', title:'Mochi', sub:'exact order ★', req:'Salmon with soy', max:5, left:2, sel:true, rot:-1.5});
+  g += ticket(450,140,{cust:'onigiri', title:'Mr Onigiri', req:'3 of anything', max:5, left:4, rot:1.5});
+  g += ticket(750,140,{cust:'frog', title:'Kero', req:'Something spicy', max:5, left:5, rot:-1});
+  g += ticket(1050,140,{cust:'bun', title:'Nana Bao', sub:'rush!', req:'2 plates, no fish', max:6, left:3, rot:2});
+  g += `<g transform="translate(1540,110)"><rect width="340" height="244" rx="20" fill="${C.paper}" stroke="#DCCDB8" stroke-width="3"/>${toolSlots(22,40,['torch','mat',null],'1P TOOLS',C.p1)}${toolSlots(22,150,['cooker','cat',null],'2P TOOLS',C.p2)}</g>`;
+  g += counter();
+  const y = 660, s = .84, xs = [250,470,690,910,1130,1350];
+  g += place(xs[0],y,s,bed({rice:true, main:'tuna', warmth:'warm'}));
+  g += place(xs[1],y,s,bed({rice:true, main:'salmon', fin:'soy', warmth:'hot', marked:true, tag:{text:'Hand-off +2', col:C.p2}, cursor:[{col:C.p1,label:'1P'}]}));
+  g += place(xs[2],y,s,bed({rice:true, warmth:'hot', cursor:[{col:C.p2,label:'2P'}]}));
+  g += place(xs[3],y,s,bed({rice:true, main:'salmon', fin:'wasabi', warmth:'warm'}));
+  g += place(xs[4],y,s,bed({rice:false}));
+  g += place(xs[5],y,s,bed({rice:true, main:'tamago', warmth:'cold'}));
+  g += scorePanel(1560,400,{head:'SERVE PREVIEW', to:'1 bed → Mochi', taste:7, mult:5, lines:['Base 1, Classic +2','Hand-off +2 (1P salmon,','2P soy)'], tips:35, h:330});
+  // hands
+  g += `<rect x="40" y="826" width="720" height="206" rx="24" fill="${C.p1}" opacity=".10"/>` + T(62,920,'1P',{size:34,fill:C.p1,weight:700}) + T(62,952,'ready ✓',{size:18,fill:C.p1});
+  ['salmon','ikura','rice','wasabi'].forEach((k,i)=>{ g += card(140 + i*150, 836, k, {sel:i===1, col:C.p1, rot:(i-1.5)*2}); });
+  g += `<rect x="1170" y="826" width="720" height="206" rx="24" fill="${C.p2}" opacity=".10"/>` + T(1188,920,'2P',{size:34,fill:C.p2,weight:700}) + T(1188,952,'choosing',{size:18,fill:C.p2});
+  ['soy','tamago','tuna','cucumber'].forEach((k,i)=>{ g += card(1274 + i*150, 836, k, {sel:i===2, col:C.p2, rot:(i-1.5)*2}); });
+  // centre: turn status + pass
+  g += `<g transform="translate(965,925)"><rect x="-180" y="-64" width="360" height="132" rx="22" fill="${C.paper}" stroke="#DCCDB8" stroke-width="3"/>
+    ${T(0,-26,'TICK 21 OF 30',{size:18,anchor:'middle',fill:C.quiet,extra:'letter-spacing="3"'})}
+    ${T(0,10,'Waiting for 2P',{size:28,anchor:'middle',weight:700})}
+    ${T(0,46,'both lock in, then the clock ticks once',{size:17,anchor:'middle',fill:C.quiet})}</g>`;
+ g += `<rect x="0" y="1036" width="1920" height="44" fill="#2A2420"/>`;
+  g += btn(70,1058,'A','Place') + btn(220,1058,'Y','Mark') + btn(350,1058,'X','Serve') + btn(490,1058,'RB','Pass topping (1 tick)') + btn(800,1058,'B','Undo');
+  g += T(1880,1064,'Simultaneous turns · drop in with A on a second controller',{size:20,anchor:'end',fill:'#A8998A'});
+  return g;
+}
+
+const mode = (location.hash||'#solo').slice(1);
+document.getElementById('s').innerHTML = mode === 'coop' ? coop() : solo();
+</script>
+</body></html>

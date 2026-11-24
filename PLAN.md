@@ -7,6 +7,8 @@
 Bed of Rice the video game: a controller-first diner-dash × placement-puzzle × roguelike-deckbuilder, the sticker cast as the pieces. Engine: **Godot 4 + GDScript** (web build first, then iPad, then Steam). Code will live in `game/`.
 Design doc (draft, open questions numbered at the end):
 https://claude.ai/artifact/Bnk4XNHTJGDkGbFoQK2bpc
+Decided 2026-11-24: turn-based with a ticket clock (every action = 1 tick, 30-tick shifts), a row of 5 beds (6 in co-op), sushi counter first, cozy tone, 3 stars + tip target, couch co-op designed in from the start (simultaneous turns), title = Bed of Rice.
+Concept screens (solo + co-op): `_concept/concept-solo.png`, `_concept/concept-coop.png`; source `_concept/screens.html`, re-render with `node _concept/shot.cjs`.
 Next: a grey-box prototype of one shift.
 
 ## The read (hypothesis — correct me)
