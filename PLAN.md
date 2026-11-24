@@ -3,6 +3,12 @@
 > Status: concept phase. This doc is a set of prompts for Charles to riff on, not settled decisions.
 > Created 2026-07-13.
 
+## Game spin-off (2026-11-24)
+Bed of Rice the video game: a controller-first diner-dash × placement-puzzle × roguelike-deckbuilder, the sticker cast as the pieces. Engine: **Godot 4 + GDScript** (web build first, then iPad, then Steam). Code will live in `game/`.
+Design doc (draft, open questions numbered at the end):
+https://claude.ai/artifact/Bnk4XNHTJGDkGbFoQK2bpc
+Next: a grey-box prototype of one shift.
+
 ## The read (hypothesis — correct me)
 "bed of rice" is a warm, everyday, comfort-food image with built-in cuteness (a little rice character *on* its bed of rice). The white space to own: the **overlap of kawaii character design and real cooking/food culture** — not generic cute food stickers, but rice with a point of view (rituals, dishes, diaspora, the humble staple that carries every cuisine). Stickers are the wedge product; the brand is the character world behind them.
 
