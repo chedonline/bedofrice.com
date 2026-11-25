@@ -7,7 +7,9 @@
 Bed of Rice the video game: a controller-first diner-dash × placement-puzzle × roguelike-deckbuilder, the sticker cast as the pieces. Engine: **Godot 4 + GDScript** (web build first, then iPad, then Steam). Code will live in `game/`.
 Design doc (draft, open questions numbered at the end):
 https://claude.ai/artifact/Bnk4XNHTJGDkGbFoQK2bpc
-Decided 2026-11-24: turn-based with a ticket clock (every action = 1 tick, 30-tick shifts), a row of 5 beds (6 in co-op), sushi counter first, cozy tone, 3 stars + tip target, couch co-op designed in from the start (simultaneous turns), title = Bed of Rice.
+Decided 2026-11-24: turn-based with a ticket clock (every action = 1 tick, 30-tick shifts), a row of 5 beds (6 in co-op), sushi counter first, cozy tone, 3 stars + tip target, couch co-op designed in from the start, title = Bed of Rice.
+Decided 2026-11-25: co-op is 1–4 players Mario Party style on a mixed couch: each player steers a free party cursor on one shared counter (one extra bed per extra player), soft clock in co-op (ticks when everyone has acted or a Relaxed/5 s/3 s timer runs out), per-player helpers. Touch works Balatro-style through the same cursor input layer, but the controller (with rumble) is the main way to play. Retro pixel art is an acceptable style; the art pass compares it against flat sticker vector.
+Open (proposed 2026-11-25, not agreed): stick + 2 buttons, with timing/finesse on each action (Paper Mario-style action commands: hold A to press the topping, release in the sweet spot) so it's easy to learn, hard to master.
 Concept screens (solo + co-op): `_concept/concept-solo.png`, `_concept/concept-coop.png`; source `_concept/screens.html`, re-render with `node _concept/shot.cjs`.
 Next: a grey-box prototype of one shift.
 
