@@ -2,6 +2,16 @@
 
 Rough playable sketches for trying game directions before the Godot build. They're plain HTML/JS with no build step. The `_` prefix keeps them off the public site, because GitHub Pages' Jekyll skips underscore folders.
 
+## look-test/: one rice cook in 3D (art direction)
+
+A Three.js sketch (loaded from the jsdelivr CDN, so it needs internet) of the hero as a soft 3D onigiri, to judge the look before any Godot work. Open `http://localhost:5181/look-test/` (or the rig IPs below).
+
+- **Two finishes:** Look button / T / Start toggles *soft clay* (matte + warm rim) and *cel shaded + ink outlines* (Street Fighter route).
+- **Moves, all procedural:** walk (hop, lean, wobble, footfall squash), Dash (stretch, dust, squash on stop), Carry (lift a nigiri overhead, wobble), Yay (anticipation squash, spin jump, confetti, camera push-in), Bonk (knock-back, X eyes, stars, freeze frame + shake + rumble).
+- **Also:** Camera (game view / close-up, the cook turns to face you when idle), Skin (classic, brown rice, sakura + sesame).
+- **Controls:** stick or WASD to move; A/Space dash, X/E carry, Y/1 yay, B/2 bonk, RB/C camera, LB/V skin. On touch, drag on the left and use the buttons.
+- **Frames:** `../_concept/look-test/`. Test hook: `window.__look.step(frames)`.
+
 ## sushi-ladder/: cozy kitchen toy (kaiten shift)
 
 One-button simplified Overcooked: one 4-minute "day" (11 AM to 9 PM) at a conveyor-belt sushi bar for 1 to 4 cooks.
