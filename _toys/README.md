@@ -16,7 +16,7 @@ A Three.js sketch (loaded from the jsdelivr CDN, so it needs internet) of the he
 
 One-button simplified Overcooked: one 4-minute "day" (11 AM to 9 PM) at a conveyor-belt sushi bar for 1 to 4 cooks.
 
-- **Run:** from the claude repo root, `python -m http.server 5181 --bind 0.0.0.0 --directory projects/bedofrice.com/_toys` (or the `bedofrice-toys` entry in `.claude/launch.json`). Then open `http://localhost:5181/sushi-ladder/`.
+- **Run:** the rig serves this folder all the time. A Task Scheduler task, "Bed of Rice toys server", starts it at logon and checks every 5 minutes, starting it again if it has stopped. It runs hidden (`conhost --headless python -m http.server 5181 --bind 0.0.0.0`), so no window appears. Open `http://localhost:5181/sushi-ladder/`. The `bedofrice-toys` entry in `.claude/launch.json` only attaches to it. To stop or start it by hand, use `Stop-ScheduledTask` or `Start-ScheduledTask -TaskName 'Bed of Rice toys server'`. Elsewhere: `python -m http.server 5181 --bind 0.0.0.0 --directory projects/bedofrice.com/_toys`.
 - **Other devices on the network:** `http://10.0.0.130:5181/sushi-ladder/` (home Wi-Fi) or `http://100.84.97.111:5181/sushi-ladder/` (Tailscale). Windows may ask once to let Python through the firewall.
 - **Join:** each player presses their button. Controller: stick + A (any face button). Keyboard: WASD + Space, or arrows + Enter. Touch: left thumb moves, right thumb is the button.
 - **Open the shop:** walk to the sign (top right) and press. The Start button on a controller does it too.
