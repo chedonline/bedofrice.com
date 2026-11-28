@@ -43,6 +43,13 @@ const THROW_MIN = 170, THROW_MAX = 600, BOOM_SPEED = 640, BOOM_R = 24;
 const PICK_R = 26, MAGNET_R = 54;
 const GOLD_CHANCE = 0.035, GOLD_VALUE = 5;
 const DUCKS = 3, DUCK_EAT = 2.2, DIZZY = 0.8;
+// co-op: a rope between partners cuts what's between them; swing together = double spin;
+// boost up a terrace wall; a storm halfway through soaks sheaves left lying on the ground
+const ROPE_MIN = 90, ROPE_MAX = 340, ROPE_R = 13, ROPE_DRAG = .72;
+const SYNC_WIN = .22, SYNC_D = 170;
+const STORM_AT = 40, STORM_W = 360, STORM_SPEED = 115, SOAK = .7;
+const STARS_DUO = [.55, .75, .92], STARS_SOLO = [.35, .55, .75], STARS_CREW = [.6, .8, .95];   // share of the field's rice for 1, 2, 3 stars (1 player, 2, 3 or 4)
+const CREW_DUCKS = 2;   // co-op: extra ducks for each player past two
 
 // ---- layout ---------------------------------------------------------------
 const SKY_H = 108;
@@ -76,6 +83,8 @@ function setLevel(i){
   try { localStorage.setItem('harvestRaceField', LV.id); } catch(e) {}
 }
 setLevel(levelIdx);
+let COOP = false;   // Race (most rice wins) or Co-op (one shared basket)
+try { COOP = localStorage.getItem('harvestRaceMode') === 'coop'; } catch(e) {}
 function wallTop(k, x){ const w = WALLS[k]; return w.y + w.a*Math.sin(x*w.f + w.ph) + w.b*Math.sin(x*w.g + w.q); }
 const wallBot = (k, x) => wallTop(k, x) + WALL_H;
 function tierAt(x, y){ let t = 0; for (let k=0; k<WALLS.length; k++) if (y > wallTop(k, x) + WALL_H/2) t = k+1; return t; }
@@ -95,6 +104,8 @@ const G = {
   state:'lobby', t:0, clock:0, countT:0, endT:0, goT:0, cleared:false,
   players:[], ducks:[], sheaves:[], booms:[], parts:[], texts:[], falls:[], hitstop:0, shake:0,
   gust:{on:false, x:-300, next:4}, toast:null, padsSeen:[], manual:false, best:0,
+  rings:[], team:0, lostDuck:0, lostRain:0, storm:{phase:'none'}, awards:[], maxValue:1, roundPlayers:1,
+  starsGot:0, endSfx:new Set(), coopBest:0, ropeSfxT:0,
 };
 try { G.best = +localStorage.getItem('harvestRaceBest') || 0; } catch(e) {}
 
@@ -240,7 +251,7 @@ const HILLS = [0,1].map(L => {
 
 // ---- field ----------------------------------------------------------------
 function resetField(){
-  paintBG(); tallCount = 0;
+  paintBG(); tallCount = 0; let value = 0;
   for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) {
     const i = r*COLS + c;
     TX[i] = X0 + c*CELL + ((r&1) ? CELL/2 : 0) + rand(-3,3);
@@ -249,9 +260,9 @@ function resetField(){
     SHADE[i] = TT[i] > 0 && TY[i] - wallBot(TT[i]-1, TX[i]) < 32 ? 1 : 0;
     TALL[i] = noRiceAt(TX[i], TY[i]) ? 0 : 1; GOLD[i] = Math.random() < GOLD_CHANCE ? 1 : 0;
     RUST[i] = 0; PH[i] = Math.random()*6.283; VAR[i] = (Math.random()*4)|0;
-    tallCount += TALL[i];
+    tallCount += TALL[i]; if (TALL[i]) value += GOLD[i] ? GOLD_VALUE : 1;
   }
-  TOTAL = tallCount;
+  TOTAL = tallCount; G.maxValue = value;
 }
 // no rice on a wall, on the dike along its top, right under it, or on the stair landings
 function noRiceAt(x, y){
@@ -300,12 +311,17 @@ function join(input){
     mx:0, my:0, btn:false, prev:false, holding:false, holdT:0, charging:false, hasSickle:true,
     cd:0, slashT:0, score:0, dizzy:0, walk:0, squash:0, combo:0, comboT:0, inRice:false,
     connected:true, ai:null, catchT:0, hitBy:null, skid:0, lean:0, wasMoving:false,
-    swing:0, lastSlash:-9, slashDur:.2, hop:0, full:false, z:0, vz:0, tier:tierAt(x, y), onStair:false, stairK:-1, stairX:0};
+    swing:0, lastSlash:-9, slashDur:.2, hop:0, full:false, z:0, vz:0, tier:tierAt(x, y), onStair:false, stairK:-1, stairX:0,
+    st:newStats(), ping:false, pingPrev:false, pingT:0, pushT:0, wantUp:0, vault:null, ropeDrag:0, syncT:-9};
   G.players.push(p); G.players.sort((a,b) => a.slot - b.slot);
   toast(`P${slot+1} ${p.col.n} joined (${deviceLabel(p)})`);
   sfxJoin(); rumble(p, 120, .4, .4);
   return p;
 }
+// what each player did this round, for the end-of-round awards
+const newStats = () => ({cut:0, picked:0, gold:0, bonked:0, bonks:0, hops:0, climbs:0, ducks:0, pings:0, helps:0, syncs:0, dist:0});
+// co-op: you can drop in while the day is on
+const canJoinNow = () => G.state === 'lobby' || (COOP && (G.state === 'play' || G.state === 'count'));
 function deviceLabel(p){
   const i = p.input;
   if (i.type === 'bot') return 'CPU';
@@ -318,7 +334,96 @@ function placePlayers(){
     p.score = 0; p.hasSickle = true; p.holding = p.charging = false; p.holdT = 0;
     p.cd = 0; p.dizzy = 0; p.combo = 0; p.ai = null; p.hitBy = null; p.prev = true; p.buffer = 0;
     p.z = p.vz = 0; p.tier = tierAt(p.x, p.y); p.onStair = false;
+    p.st = newStats(); p.vault = null; p.pushT = p.wantUp = p.pingT = p.ropeDrag = 0; p.syncT = -9;
   }
+}
+// ---- co-op ---------------------------------------------------------------------
+// partners share a rope: P1 + P2, P3 + P4
+function ropePairs(){
+  if (!COOP) return [];
+  const ps = G.players, out = [];
+  for (let i=0; i+1<ps.length; i+=2) out.push([ps[i], ps[i+1]]);
+  return out;
+}
+function ropePartner(p){ for (const [a, b] of ropePairs()) { if (a === p) return b; if (b === p) return a; } return null; }
+// the two-handled scythe: a rope with a blade along it. Spread out and walk, and
+// everything between you is cut. Too far apart and it tugs you together.
+function ropes(){
+  for (const [a, b] of ropePairs()) {
+    let dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+    if (d > ROPE_MAX && !(a.vault && b.vault)) {
+      const ex = d - ROPE_MAX, wa = a.vault ? 0 : b.vault ? 1 : .5;
+      for (const [p, w, s] of [[a, wa, 1], [b, 1 - wa, -1]]) {
+        if (!w) continue;
+        const py = p.y;
+        p.x = clamp(p.x + s*dx/d*ex*w, BUND.x0+9, BUND.x1-9); p.y = clamp(p.y + s*dy/d*ex*w, BUND.y0+12, BUND.y1-5);
+        if (WALLS.length) terrain(p, py);
+        p.tier = tierAt(p.x, p.y);
+      }
+      dx = b.x - a.x; dy = b.y - a.y; d = Math.hypot(dx, dy) || 1;
+    }
+    const taut = d > ROPE_MIN && a.tier === b.tier && !a.onStair && !b.onStair && a.z <= 0 && b.z <= 0 && !a.vault && !b.vault;
+    const moving = Math.hypot(a.vx, a.vy) + Math.hypot(b.vx, b.vy) > 70;
+    a.taut = b.taut = taut;
+    if (!taut || !moving || !(G.state === 'play' || G.state === 'lobby')) continue;
+    let n = 0; const steps = Math.ceil(d/14);
+    for (let k=0; k<=steps; k++) n += cutCircle(a.x + dx*k/steps, a.y + dy*k/steps, ROPE_R, a.tier);
+    if (!n) continue;
+    a.ropeDrag = b.ropeDrag = .15; a.st.cut += n/2; b.st.cut += n/2;
+    if (G.t - G.ropeSfxT > .07) {
+      G.ropeSfxT = G.t; sfxCrunch(n); G.shake = Math.max(G.shake, Math.min(2.5, .6 + n*.15));
+      rumble(a, 50, .06, .3); rumble(b, 50, .06, .3);
+    }
+    scareDucks((a.x + b.x)/2, (a.y + b.y)/2, d/2 + 30, null);
+  }
+}
+// swing at the same moment as a friend close by: one big double spin between you (humans only)
+function syncPartner(p){
+  if (!COOP || p.input.type === 'bot' || G.t - p.syncT < .6 || p.z > 0) return null;
+  return G.players.find(q => q !== p && q.input.type !== 'bot' && q.dizzy <= 0 && q.z <= 0 &&
+    G.t - q.lastSlash < SYNC_WIN && G.t - q.syncT > .6 && Math.hypot(q.x - p.x, q.y - p.y) < SYNC_D &&
+    (q.tier === p.tier || q.onStair || p.onStair)) || null;
+}
+function doubleSpin(p, q){
+  const mx = (p.x + q.x)/2, my = (p.y + q.y)/2, R = Math.hypot(q.x - p.x, q.y - p.y)/2 + 78;
+  const n = cutCircle(mx, my, R, p.onStair ? (q.onStair ? -1 : q.tier) : p.tier);
+  for (const r of [p, q]) {
+    r.swing = 2; r.slashT = r.slashDur = .36; r.hop = .2; r.squash = -.25; r.cd = .45;
+    r.syncT = G.t; r.lastSlash = -9; r.st.syncs++; r.st.cut += n/2; rumble(r, 220, .7, .7);
+  }
+  G.rings.push({x:mx, y:my, r0:20, r1:R, life:0, max:.45, col:'#fff8dc', w:6});
+  impact(n + 10, true); G.shake = Math.max(G.shake, 6);
+  addText(mx, my - 74, 'Together!', '#ffe7a0', 32);
+  [0, 4, 7, 12].forEach((s, i) => tone(392*2**(s/12), .22, 'triangle', .1, null, i*.04));
+  noise(.35, 2600, 500, .2);
+  helpUp(p, mx, my, R); scareDucks(mx, my, R + 60, p);
+}
+// a swing right next to a dizzy friend wakes them up
+function helpUp(p, x, y, r){
+  if (!COOP) return;
+  for (const q of G.players) if (q !== p && q.dizzy > 0 && Math.hypot(q.x - x, q.y - y) < r) {
+    q.dizzy = 0; q.squash = .3; p.st.helps++;
+    addText(q.x, q.y - 58, 'up you get!', '#d6ffb8', 18); tone(660, .1, 'triangle', .08, 990);
+  }
+}
+// boost: push up against a terrace wall with a friend beside you at the bottom (they're the step),
+// or standing on the lip above (they pull you up)
+function tryBoost(p, dt){
+  p.pushT = p.pushT || 0;
+  const k = p.tier - 1;
+  if (k < 0 || p.onStair || p.z > 0 || p.dizzy > 0 || p.my > -.5 || p.y - wallBot(k, p.x) > 4) { p.pushT = 0; p.wantUp = 0; return; }
+  p.wantUp += dt;
+  const helper = G.players.find(q => q !== p && q.z <= 0 && !q.vault && !q.onStair && Math.abs(q.x - p.x) < 46 &&
+    ((q.tier === p.tier && q.y - wallBot(k, q.x) < 34) || (q.tier === k && wallTop(k, q.x) - q.y < 30)));
+  if (!helper) { p.pushT = 0; return; }
+  p.pushT += dt;
+  if (p.pushT < .12) return;
+  const below = helper.tier === p.tier;
+  p.vault = {t:0, dur:.42, x:p.x, y0:p.y, y1:wallTop(k, p.x) - 8};
+  p.pushT = p.wantUp = 0; p.vx = p.vy = 0;
+  helper.squash = below ? .42 : -.2; helper.st.helps++;
+  addText(helper.x, helper.y - 58, below ? 'hup!' : 'heave!', '#fff', 20);
+  tone(300, .18, 'triangle', .1, 720); rumble(p, 120, .3, .5); rumble(helper, 160, .5, .3);
 }
 // terraces: a wall stops you from below (find the stairs); from above you stop at the lip,
 // or push the stick down to hop off it
@@ -339,7 +444,7 @@ function terrain(p, py){
 function hopDown(p, k){
   const top = wallTop(k, p.x), bot = top + WALL_H;
   p.y = bot + 6; p.z = bot + 6 - top; p.vz = DROP_HOP; p.vy = Math.max(p.vy, 60);
-  p.squash = -.22; sfxHop();
+  p.squash = -.22; sfxHop(); p.st.hops++;
 }
 function land(p){
   p.squash = Math.max(p.squash, .34); puff(p.x, p.y, 7, '#e0d2a6'); sfxThud();
@@ -351,7 +456,10 @@ function updatePlayer(p, dt, canAct){
   const pressed = p.btn && !p.prev, released = !p.btn && p.prev; p.prev = p.btn;
   p.cd = Math.max(0, p.cd-dt); p.slashT = Math.max(0, p.slashT-dt);
   p.dizzy = Math.max(0, p.dizzy-dt); p.catchT = Math.max(0, p.catchT-dt);
-  if (canAct && p.dizzy <= 0) {
+  p.pingT = Math.max(0, p.pingT - dt); p.ropeDrag = Math.max(0, p.ropeDrag - dt);
+  if (p.ping && !p.pingPrev && p.connected) doPing(p);
+  p.pingPrev = p.ping;
+  if (canAct && p.dizzy <= 0 && !p.vault) {
     if (pressed) {
       if (p.hasSickle) { if (p.cd <= 0) slash(p); else p.buffer = .2; p.holding = true; p.holdT = 0; p.charging = false; }
       else recall(p);
@@ -367,9 +475,18 @@ function updatePlayer(p, dt, canAct){
   } else { p.holding = p.charging = false; p.holdT = 0; p.full = false; }
   const m = Math.hypot(p.mx, p.my);
   if (m > .25) { p.fx = p.mx/m; p.fy = p.my/m; }   // facing turns instantly (snappy)
+  if (p.vault) {   // being boosted up a terrace wall
+    const v = p.vault; v.t += dt;
+    const u = Math.min(1, v.t/v.dur), e = u*u*(3 - 2*u);
+    p.x = v.x; p.y = v.y0 + (v.y1 - v.y0)*e; p.z = Math.sin(Math.PI*u)*38; p.vx = p.vy = 0;
+    p.squash = u < .3 ? -.25 : p.squash*Math.exp(-dt*10);
+    if (u >= 1) { p.vault = null; p.z = p.vz = 0; p.tier = tierAt(p.x, p.y); p.st.climbs++; land(p); }
+    return;
+  }
   p.inRice = p.z <= 0 && tallNear(p.x, p.y, 16);
   let sp = p.inRice ? SPEED_RICE : SPEED_OPEN;
   if (p.onStair) sp *= STAIR_SLOW;
+  if (p.ropeDrag > 0) sp *= ROPE_DRAG;   // the rope drags through the rice it's cutting
   if (p.charging) sp *= CHARGE_SLOW;
   if (p.dizzy > 0) sp *= .35;
   // momentum: accelerate hard, slide a little when you let go, skid when you reverse
@@ -390,7 +507,11 @@ function updatePlayer(p, dt, canAct){
   p.x = clamp(p.x + p.vx*dt, BUND.x0+9, BUND.x1-9);
   p.y = clamp(p.y + p.vy*dt, BUND.y0+12, BUND.y1-5);
   if (WALLS.length) terrain(p, py);
-  p.tier = tierAt(p.x, p.y);
+  const nt = tierAt(p.x, p.y);
+  if (nt < p.tier) p.st.climbs++;
+  p.tier = nt;
+  if (COOP && WALLS.length && canAct) tryBoost(p, dt);
+  p.st.dist += Math.hypot(p.vx, p.vy)*dt;
   if (p.z > 0 || p.vz) { p.vz -= GRAV_Z*dt; p.z += p.vz*dt; if (p.z <= 0) { p.z = p.vz = 0; land(p); } }
   const spd = Math.hypot(p.vx, p.vy), moving = spd > 40;
   if (moving && !p.wasMoving) p.squash = Math.min(p.squash, -.14);                 // stretch on take-off
@@ -406,6 +527,8 @@ function updatePlayer(p, dt, canAct){
 }
 // tap, tap, tap = left swing, right swing, spin (bigger). Chain window 0.5 s.
 function slash(p){
+  const q = syncPartner(p);
+  if (q) return doubleSpin(p, q);
   const chain = G.t - p.lastSlash < .5; p.lastSlash = G.t;
   p.swing = chain ? (p.swing + 1) % 3 : 0;
   const spin = p.swing === 2;
@@ -420,7 +543,17 @@ function slash(p){
   sfxSlash(n, p.swing);
   if (n) { rumble(p, 50 + n*6, Math.min(1, .08 + n*.04), Math.min(1, .3 + n*.03)); impact(n, spin); }
   if (n >= 10) addText(p.x, p.y - 64, `${n}!`, '#fff', 18 + Math.min(10, n - 10));
-  scareDucks(p.x, p.y, 100);
+  p.st.cut += n;
+  helpUp(p, p.x, p.y, 90);
+  scareDucks(p.x, p.y, 100, p);
+}
+// Y (E / slash on the keys): a "!" over your head and a ring on the ground
+function doPing(p){
+  p.pingT = 1.1; p.st.pings++;
+  G.rings.push({x:p.x, y:p.y, r0:8, r1:52, life:0, max:.5, col:p.col.c, w:5});
+  const f = 880*[1, 1.122, 1.26, 1.498][p.slot];
+  tone(f, .07, 'square', .045); tone(f*1.5, .09, 'square', .04, null, .07);
+  rumble(p, 40, .1, .3);
 }
 // hit-stop + screen shake, scaled by how much rice one swing took
 function impact(n, big){
@@ -466,6 +599,7 @@ function updateBoom(b, dt){
   let cut = 0;
   for (let k=1; k<=n; k++) cut += cutCircle(px + (b.x-px)*k/n, py + (b.y-py)*k/n, b.r);
   if (cut) {
+    b.owner.st.cut += cut;
     sfxCrunch(cut);
     if (b.rt <= 0) { b.rt = .06; rumble(b.owner, 45, .04, .28); G.shake = Math.max(G.shake, 1.2); }  // feel the mowing in your hands
   }
@@ -477,9 +611,10 @@ function updateBoom(b, dt){
     if (Math.hypot(q.x-b.x, q.y-b.y) < 24) {
       q.hitBy = b; q.dizzy = DIZZY; q.squash = .35; sfxBonk(); rumble(q, 220, .6, .6);
       addText(q.x, q.y-56, 'bonk!', '#fff', 22);
+      b.owner.st.bonks++; q.st.bonked++;
     }
   }
-  scareDucks(b.x, b.y, 60);
+  scareDucks(b.x, b.y, 60, b.owner);
 }
 
 // ---- sheaves, ducks, particles --------------------------------------------
@@ -519,20 +654,21 @@ function sheafTerrain(s){
 function collect(p, s){
   s.dead = true;
   const v = s.gold ? GOLD_VALUE : 1;
-  p.score += v; p.combo++; p.comboT = .5; p.squash = Math.max(p.squash, .08);
+  p.score += v; G.team += v; p.combo++; p.comboT = .5; p.squash = Math.max(p.squash, .08);
+  p.st.picked++; if (s.gold) p.st.gold++;
   sfxPick(p.combo, s.gold);
   if (s.gold) { addText(p.x, p.y-60, `+${GOLD_VALUE}`, '#ffe066', 26); rumble(p, 80, .2, .4); }
 }
-function newDuck(_, i){
+function newDuck(i, n){
   // on the terraces each duck keeps to its own tier (spread from the top tier to the bottom one)
-  const T = WALLS.length, tier = T ? Math.round(i*T/Math.max(1, DUCKS-1)) : 0;
+  const T = WALLS.length, tier = T ? Math.round(i*T/Math.max(1, n-1)) : 0;
   const x = rand(PADDY.x0+60, PADDY.x1-60), [lo, hi] = duckBounds(tier, x);
   return {duck:true, tier, x, y:T ? rand(lo, hi) : rand(PADDY.y0+60, PADDY.y1-40), tx:x, ty:0,
           vx:0, vy:0, retarget:0, target:null, eat:0, face:1, waddle:Math.random()*6, quackT:rand(1,4)};
 }
 function duckBounds(tier, x){ const [lo, hi] = tierBounds(tier, x); return [Math.max(lo + 8, PADDY.y0 + 14), Math.min(hi - 4, PADDY.y1 - 6)]; }
-function scareDucks(x, y, r){
-  for (const d of G.ducks) if (Math.hypot(d.x-x, d.y-y) < r) { d.scare = .5; d.sx = x; d.sy = y; }
+function scareDucks(x, y, r, p){
+  for (const d of G.ducks) if (Math.hypot(d.x-x, d.y-y) < r) { if (p && !(d.scare > 0)) p.st.ducks++; d.scare = .5; d.sx = x; d.sy = y; }
 }
 function updateDuck(d, dt){
   d.retarget -= dt; d.quackT -= dt; d.scare = Math.max(0, (d.scare||0) - dt);
@@ -550,7 +686,7 @@ function updateDuck(d, dt){
     else {
       const ax = s.x - d.x, ay = s.y - d.y, a = Math.hypot(ax, ay);
       if (a > 9) { mvx = ax/a; mvy = ay/a; sp = 80; }
-      else if (s.landed) { d.eating = true; d.eat += dt; if (d.eat >= DUCK_EAT) { s.dead = true; d.target = null; d.eat = 0; addText(d.x, d.y-30, 'nom', '#fff', 15); tone(300, .08, 'triangle', .05, 200); } }
+      else if (s.landed) { d.eating = true; d.eat += dt; if (d.eat >= DUCK_EAT) { s.dead = true; G.lostDuck += s.gold ? GOLD_VALUE : 1; d.target = null; d.eat = 0; addText(d.x, d.y-30, 'nom', '#fff', 15); tone(300, .08, 'triangle', .05, 200); } }
     }
   } else {
     if (d.retarget <= 0) {
@@ -579,6 +715,8 @@ function toast(msg){ G.toast = {msg, t:0}; }
 function botThink(p, dt){
   const a = p.ai || (p.ai = {mx:0, my:0, b:false, tx:p.x, ty:p.y, think:0, mode:'walk', hold:0, throwCD:rand(2,4), ax:1, ay:0});
   a.think -= dt; a.throwCD -= dt;
+  const rp = ropePartner(p);   // a partner who stands still for 2 s gets left to it
+  a.pIdle = rp && Math.hypot(rp.vx, rp.vy) < 20 && !(rp.wantUp > 0) ? (a.pIdle || 0) + dt : 0;
   if (a.mode === 'aim') {
     a.hold -= dt; a.b = true; a.mx = a.ax*.3; a.my = a.ay*.3;
     if (a.hold <= 0) { a.b = false; a.mode = 'walk'; a.throwCD = rand(3, 6); }
@@ -595,6 +733,23 @@ function botThink(p, dt){
       const scanAll = tallCount < 120;   // near the end, sampling misses the last tufts
       for (let k=0; k<(scanAll ? N : 80); k++) { const i = scanAll ? k : (Math.random()*N)|0; if (!TALL[i]) continue; const d = (TX[i]-p.x)**2 + (TY[i]-p.y)**2 + far(TT[i]); if (d < bdd) { bdd = d; bi = i; } }
       if (bi >= 0) { a.tx = TX[bi]; a.ty = TY[bi]; } else { a.tx = rand(PADDY.x0, PADDY.x1); a.ty = rand(PADDY.y0, PADDY.y1); }
+    }
+    // co-op: walk beside your partner (a human, or the CPU with the lower number) so the rope sweeps
+    const q = ropePartner(p);
+    if (q && (q.input.type !== 'bot' || q.slot < p.slot) && !(best && bd < 90*90) && a.pIdle < 2) {
+      if (q.wantUp > .25 && WALLS.length && q.tier > 0) {   // they're stuck at a wall: go and be the step
+        const k = q.tier - 1, sd = p.x > q.x ? 1 : -1;
+        if (p.tier === q.tier) { a.tx = q.x + sd*30; a.ty = wallBot(k, q.x) + 14; }
+        else { a.tx = q.x; a.ty = wallTop(k, q.x) - 12; }
+      } else {
+        let s = a.side || (a.side = p.slot % 2 ? 1 : -1);
+        const at = sd => [q.x - q.fy*sd*230 + q.fx*30, q.y + q.fx*sd*230 + q.fy*30];
+        let [tx, ty] = at(s);
+        if (tx < PADDY.x0 + 20 || tx > PADDY.x1 - 20 || ty < PADDY.y0 + 10 || ty > PADDY.y1 - 10) { a.side = s = -s; [tx, ty] = at(s); }
+        tx = clamp(tx, PADDY.x0 + 20, PADDY.x1 - 20);
+        const [lo, hi] = tierBounds(q.tier, tx);
+        a.tx = tx; a.ty = clamp(ty, lo + 8, hi - 8);
+      }
     }
     if (p.hasSickle && a.throwCD <= 0) {
       let dir = null, bestN = 0;
@@ -635,10 +790,11 @@ function botWaypoint(p, tx, ty){
 // ---- input -------------------------------------------------------------------
 const keys = new Set();
 const KEYSETS = {
-  A: {u:'KeyW', d:'KeyS', l:'KeyA', r:'KeyD', b:['Space']},
-  B: {u:'ArrowUp', d:'ArrowDown', l:'ArrowLeft', r:'ArrowRight', b:['Enter','NumpadEnter','ShiftRight']},
+  A: {u:'KeyW', d:'KeyS', l:'KeyA', r:'KeyD', b:['Space'], ping:'KeyE'},
+  B: {u:'ArrowUp', d:'ArrowDown', l:'ArrowLeft', r:'ArrowRight', b:['Enter','NumpadEnter','ShiftRight'], ping:'Slash'},
 };
-const ACTION_BTNS = [0,1,2,3,6,7];   // LB/RB (4/5) switch the field in the lobby
+// A, B, X are the button. Y (3) pings. In the lobby LB/RB (4/5) switch the field, LT/RT (6/7) the mode.
+const ACTION_BTNS = [0,1,2], PING_BTN = 3;
 addEventListener('keydown', e => {
   unlockAudio(); wake();
   if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Tab'].includes(e.code)) e.preventDefault();
@@ -656,10 +812,13 @@ addEventListener('keydown', e => {
   else if (c === 'KeyP' || c === 'Escape') { if (G.state === 'play') pause(true); else if (G.state === 'paused') pause(false); }
   else if (c === 'KeyC') addBot();
   else if (c === 'KeyT') switchLevel(1);
+  else if (c === 'KeyO') switchMode();
   else if (c === 'KeyQ') { if (G.state === 'paused' || G.state === 'end') toLobby(); }
   else if (c === 'KeyM') { muted = !muted; if (windGain) windGain.gain.value = muted ? 0 : .025; toast(muted ? 'Sound off (M)' : 'Sound on'); }
-  else if (G.state === 'lobby') {
-    for (const set of ['A','B']) if (KEYSETS[set].b.includes(c) && !G.players.some(p => p.input.type === 'key' && p.input.set === set)) join({type:'key', set});
+  else if (canJoinNow()) {
+    for (const set of ['A','B']) if (KEYSETS[set].b.includes(c) && !G.players.some(p => p.input.type === 'key' && p.input.set === set)) {
+      const p = join({type:'key', set}); if (p) p.prev = true;
+    }
   }
 });
 addEventListener('keyup', e => keys.delete(e.code));
@@ -698,7 +857,8 @@ function pollPads(){
     if (edge(8)) backPressed();
     if (edge(4)) switchLevel(-1);
     if (edge(5)) switchLevel(1);
-    if (!owner && G.state === 'lobby' && ACTION_BTNS.some(edge)) {
+    if (edge(6) || edge(7)) switchMode();
+    if (!owner && canJoinNow() && ACTION_BTNS.some(edge)) {
       const p = join({type:'pad', index:pad.index, id:pad.id});
       if (p) p.prev = true;   // the join press is not also a swing
     }
@@ -707,7 +867,7 @@ function pollPads(){
   return pads;
 }
 function readInput(p, pads, dt){
-  const inp = p.input; let mx = 0, my = 0, b = false;
+  const inp = p.input; let mx = 0, my = 0, b = false, ping = false;
   if (inp.type === 'pad') {
     const pad = pads[inp.index];
     p.connected = !!(pad && pad.connected);
@@ -716,15 +876,15 @@ function readInput(p, pads, dt){
       if (m < .22) { ax = ay = 0; } else { const k = Math.min(1, (m-.22)/.68)/m; ax *= k; ay *= k; }
       const B = i => pad.buttons[i] && (pad.buttons[i].pressed || pad.buttons[i].value > .5);
       if (B(14)) ax = -1; if (B(15)) ax = 1; if (B(12)) ay = -1; if (B(13)) ay = 1;
-      mx = ax; my = ay; b = ACTION_BTNS.some(B);
+      mx = ax; my = ay; b = ACTION_BTNS.some(B); ping = B(PING_BTN);
     }
   } else if (inp.type === 'key') {
     const s = KEYSETS[inp.set];
     mx = (keys.has(s.r)?1:0) - (keys.has(s.l)?1:0); my = (keys.has(s.d)?1:0) - (keys.has(s.u)?1:0);
-    b = s.b.some(k => keys.has(k));
+    b = s.b.some(k => keys.has(k)); ping = keys.has(s.ping);
   } else { botThink(p, dt); mx = p.ai.mx; my = p.ai.my; b = p.ai.b; }
   const m = Math.hypot(mx, my); if (m > 1) { mx /= m; my /= m; }
-  p.mx = mx; p.my = my; p.btn = b;
+  p.mx = mx; p.my = my; p.btn = b; p.ping = ping;
 }
 function rumble(p, ms, strong, weak){
   if (p.input.type !== 'pad') return;
@@ -755,13 +915,90 @@ function switchLevel(d){
   setLevel(levelIdx + d); resetWorld();
   toast(`Field: ${LV.name}`); tone(660, .06, 'triangle', .07); tone(990, .08, 'triangle', .07, null, .05);
 }
+function switchMode(){
+  if (G.state !== 'lobby') return;
+  COOP = !COOP;
+  try { localStorage.setItem('harvestRaceMode', COOP ? 'coop' : 'race'); } catch(e) {}
+  resetWorld();
+  toast(COOP ? 'Mode: Co-op (one basket for everyone)' : 'Mode: Race (most rice wins)');
+  tone(COOP ? 784 : 660, .06, 'triangle', .07); tone(COOP ? 1175 : 990, .08, 'triangle', .07, null, .05);
+}
 function resetWorld(){
   resetField(); G.sheaves = []; G.booms = []; G.parts = []; G.texts = []; G.falls = []; G.hitstop = 0; G.shake = 0;
-  G.ducks = Array.from({length:DUCKS}, newDuck);
+  G.rings = []; G.team = 0; G.lostDuck = 0; G.lostRain = 0; G.storm = {phase:'none', x:-99, t:0, drip:0};
+  const nd = DUCKS + (COOP ? Math.max(0, G.players.length - 2)*CREW_DUCKS : 0);
+  G.ducks = Array.from({length:nd}, (_, i) => newDuck(i, nd));
   placePlayers();
 }
 function beginRound(){
   resetWorld(); G.state = 'count'; G.countT = 0; G.clock = 0; G.cleared = false; G.lastBeep = -1;
+  G.roundPlayers = G.players.length;
+}
+// co-op targets: a share of all the rice in the field (a lower bar when you play alone)
+function starT(){ const n = G.roundPlayers; return (n >= 3 ? STARS_CREW : n === 2 ? STARS_DUO : STARS_SOLO).map(f => Math.round(G.maxValue*f)); }
+// the storm: a warning, then a band of rain sweeps across and soaks any sheaf left lying in it
+// a bigger crew clears the field sooner, so their storm comes sooner too
+const stormAt = () => STORM_AT - Math.max(0, G.roundPlayers - 2)*8;
+function updateStorm(dt){
+  const st = G.storm;
+  if (st.phase === 'none' && G.clock >= stormAt() - 5) {
+    st.phase = 'warn'; toast('A storm is coming! Pick up the sheaves.'); sfxThunder();
+  } else if (st.phase === 'warn' && G.clock >= stormAt()) {
+    st.phase = 'rain'; st.x = -20; sfxThunder();
+  } else if (st.phase === 'rain') {
+    st.x += STORM_SPEED*dt;
+    if (st.x - STORM_W > W) st.phase = 'done';
+    st.drip -= dt; if (st.drip <= 0) { st.drip = .08; noise(.14, 5200, 3000, .025, .8); }
+    for (const s of G.sheaves) {
+      if (s.dead || !s.landed || s.x > st.x || s.x < st.x - STORM_W) continue;
+      s.wet = (s.wet || 0) + dt;
+      if (s.wet >= SOAK) {
+        s.dead = true; G.lostRain += s.gold ? GOLD_VALUE : 1;
+        for (let k=0; k<4 && G.parts.length < 420; k++) G.parts.push({dust:true, x:s.x + rand(-5,5), y:s.y, z:2, vx:rand(-40,40), vy:rand(-15,15), vz:rand(30,70), life:0, max:.35, c:'#b9c9de'});
+        if (Math.random() < .25) addText(s.x, s.y - 26, 'soggy', '#d6e4ff', 14);
+      }
+    }
+  }
+}
+// how dark the storm makes things (0..1)
+function stormDark(){
+  const st = G.storm;
+  if (!COOP) return 0;
+  if (st.phase === 'warn') return clamp((G.clock - (stormAt() - 5))/5, 0, 1);
+  if (st.phase === 'rain') return clamp((W + STORM_W - st.x)/STORM_W, 0, 1);
+  return 0;
+}
+// ---- end-of-round awards ----------------------------------------------------------
+const pl = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
+const AWARDS = [
+  {t:'Bonk Magnet',    k:'bonked', fun:3,   d:n => `bonked ${pl(n, 'time')}`},
+  {t:'Gravity Fan',    k:'hops',   fun:3,   d:n => `fell off ${pl(n, 'terrace')}`, min:2},
+  {t:'Duck Whisperer', k:'ducks',  fun:3,   d:n => `scared ${pl(n, 'duck')}`, min:3},
+  {t:'Menace',         k:'bonks',  fun:2.5, d:n => `${pl(n, 'bonk')} dealt`},
+  {t:'In Sync',        k:'syncs',  fun:2.5, d:n => pl(n, 'double spin')},
+  {t:'Helping Hand',   k:'helps',  fun:2.5, d:n => `${pl(n, 'boost')} and rescues`},
+  {t:'Chatterbox',     k:'pings',  fun:2,   d:n => `pinged ${pl(n, 'time')}`, min:3},
+  {t:'Golden Touch',   k:'gold',   fun:2,   d:n => pl(n, 'golden sheaf', 'golden sheaves')},
+  {t:'Stair Master',   k:'climbs', fun:1.5, d:n => `climbed up ${pl(n, 'time')}`, min:2},
+  {t:'Lawn Mower',     k:'cut',    fun:1,   d:n => `${n} stalks cut`},
+  {t:'Top Picker',     k:'picked', fun:1,   d:n => `${n} sheaves grabbed`},
+  {t:'Marathon',       k:'dist',   fun:.5,  d:n => `ran ${n} m`, fmt:v => Math.round(v/40)},
+];
+function pickAwards(){
+  const ps = G.players; if (!ps.length) return [];
+  const cands = [];
+  for (const a of AWARDS) {
+    let best = null, bv = 0, tie = false;
+    for (const p of ps) { const v = p.st[a.k]; if (v > bv) { bv = v; best = p; tie = false; } else if (v === bv && v > 0) tie = true; }
+    if (!best || bv < (a.min || 1) || (tie && ps.length > 1)) continue;
+    cands.push({a, p:best, v:bv, w:a.fun + Math.random()*1.5});
+  }
+  cands.sort((x, y) => y.w - x.w);
+  // one award each first, so everybody on the couch gets a laugh
+  const want = Math.min(4, Math.max(2, ps.length)), out = [], got = new Set();
+  for (const c of cands) if (out.length < want && !got.has(c.p)) { out.push(c); got.add(c.p); }
+  for (const c of cands) if (out.length < want && !out.includes(c)) out.push(c);
+  return out.map(c => ({title:c.a.t, desc:c.a.d(c.a.fmt ? c.a.fmt(c.v) : Math.round(c.v)), p:c.p}));
 }
 function toLobby(){ resetWorld(); G.state = 'lobby'; }
 function pause(on){
@@ -785,10 +1022,19 @@ function endRound(cleared){
   G.state = 'end'; G.endT = 0; G.cleared = !!cleared;
   for (const b of G.booms) b.owner.hasSickle = true;
   G.booms = [];
-  const top = Math.max(...G.players.map(p => p.score));
-  for (const p of G.players) if (p.score === top) rumble(p, 400, .5, .5);
-  const humanTop = Math.max(0, ...G.players.filter(p => p.input.type !== 'bot').map(p => p.score));
-  if (humanTop > G.best) { G.best = humanTop; G.newBest = true; try { localStorage.setItem('harvestRaceBest', humanTop); } catch(e) {} } else G.newBest = false;
+  G.awards = pickAwards(); G.endSfx = new Set();
+  if (COOP) {
+    const t = starT(); G.starsGot = t.filter(v => G.team >= v).length;
+    for (const p of G.players) rumble(p, 300 + G.starsGot*120, .5, .5);
+    const key = 'harvestRaceCoop_' + LV.id;
+    try { G.coopBest = +localStorage.getItem(key) || 0; } catch(e) {}
+    if (G.team > G.coopBest) { G.coopBest = G.team; G.newBest = true; try { localStorage.setItem(key, G.team); } catch(e) {} } else G.newBest = false;
+  } else {
+    const top = Math.max(...G.players.map(p => p.score));
+    for (const p of G.players) if (p.score === top) rumble(p, 400, .5, .5);
+    const humanTop = Math.max(0, ...G.players.filter(p => p.input.type !== 'bot').map(p => p.score));
+    if (humanTop > G.best) { G.best = humanTop; G.newBest = true; try { localStorage.setItem('harvestRaceBest', humanTop); } catch(e) {} } else G.newBest = false;
+  }
   sfxFanfare();
 }
 
@@ -814,11 +1060,15 @@ function update(dt){
   for (const p of G.players) { readInput(p, pads, dt); updatePlayer(p, dt, canAct); }
   for (let i=0; i<G.players.length; i++) for (let j=i+1; j<G.players.length; j++) {
     const a = G.players[i], b = G.players[j], dx = b.x-a.x, dy = b.y-a.y, d = Math.hypot(dx,dy);
-    if (d > 0 && d < 26 && (a.tier === b.tier || a.onStair || b.onStair)) { const push = (26-d)/2; a.x -= dx/d*push; a.y -= dy/d*push; b.x += dx/d*push; b.y += dy/d*push; }
+    if (d > 0 && d < 26 && !a.vault && !b.vault && (a.tier === b.tier || a.onStair || b.onStair)) { const push = (26-d)/2; a.x -= dx/d*push; a.y -= dy/d*push; b.x += dx/d*push; b.y += dy/d*push; }
   }
+  ropes();
   for (const b of G.booms) updateBoom(b, dt);
   G.booms = G.booms.filter(b => !b.dead);
+  if (COOP && G.state === 'play') updateStorm(dt);
   updateSheaves(dt);
+  for (const r of G.rings) r.life += dt;
+  G.rings = G.rings.filter(r => r.life < r.max);
   for (const d of G.ducks) updateDuck(d, dt);
   for (const q of G.parts) { q.life += dt; q.vz -= 600*dt; q.z = Math.max(0, q.z + q.vz*dt); q.x += q.vx*dt; q.y += q.vy*dt; q.vx *= .96; q.vy *= .96; }
   G.parts = G.parts.filter(q => q.life < q.max);
@@ -843,8 +1093,16 @@ function update(dt){
     if (left <= 5 && left !== G.lastBeep && left > 0) { G.lastBeep = left; tone(880, .1, 'triangle', .12); }
     if (G.clock >= ROUND) endRound(false);
     else if (tallCount === 0 && !G.sheaves.length && !G.booms.length) endRound(true);
-  } else if (G.state === 'end') G.endT += dt;
+  } else if (G.state === 'end') {
+    G.endT += dt;
+    // the stars pop in one by one, then the awards
+    if (COOP) for (let i=0; i<G.starsGot; i++) if (!G.endSfx.has('s'+i) && G.endT > .9 + i*.45) {
+      G.endSfx.add('s'+i); tone(784*2**(i*4/12), .3, 'triangle', .13); tone(1568*2**(i*4/12), .25, 'sine', .05, null, .03);
+    }
+    G.awards.forEach((a, i) => { if (!G.endSfx.has('a'+i) && G.endT > awardAt(i)) { G.endSfx.add('a'+i); tone(1175, .08, 'triangle', .07); tone(1568, .1, 'triangle', .05, null, .06); rumble(a.p, 80, .2, .3); } });
+  }
 }
+const awardAt = i => (COOP ? 2.4 : 1.3) + i*.45;
 
 // ---- drawing ---------------------------------------------------------------------
 let DPR = 1, S = 1, SC = 1, OX = 0, OY = 0, OX0 = 0, OY0 = 0;   // OX/OY include the screen shake; OX0/OY0 don't
@@ -994,7 +1252,60 @@ function drawSheaf(s){
     const a = .35 + .2*Math.sin(G.t*6 + s.x);
     ctx.fillStyle = `rgba(255,230,120,${a})`; ctx.beginPath(); ctx.arc(s.x, s.y - s.z - 10, 14, 0, 7); ctx.fill();
   }
+  if (s.wet) ctx.globalAlpha = 1 - Math.min(.65, s.wet/SOAK*.65);   // going soggy in the rain
   ctx.drawImage(s.gold ? SHEAF_GOLD : SHEAF, s.x - 8*sc, s.y - s.z - 19*sc, 16*sc, 20*sc);
+  ctx.globalAlpha = 1;
+}
+function drawRopes(){
+  base(); ctx.lineCap = 'round';
+  for (const [a, b] of ropePairs()) {
+    const ax = a.x, ay = a.y - 12 - a.z, bx = b.x, by = b.y - 12 - b.z, d = Math.hypot(b.x - a.x, b.y - a.y);
+    const cutting = a.ropeDrag > 0 && a.taut;
+    // where the blade runs: a faint swath on the ground between you
+    if (a.taut) {
+      ctx.strokeStyle = `rgba(255,250,225,${cutting ? .3 : .13})`; ctx.lineWidth = ROPE_R*2;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    const sag = a.taut ? 3 + (cutting ? Math.sin(G.t*70)*2.5 : 0) : d < ROPE_MIN ? (ROPE_MIN - d)*.5 + 16 : 28;
+    const cx = (ax + bx)/2, cy = (ay + by)/2 + sag*2;
+    const path = () => { ctx.beginPath(); ctx.moveTo(ax, ay); ctx.quadraticCurveTo(cx, cy, bx, by); };
+    path(); ctx.strokeStyle = '#5d4426'; ctx.lineWidth = 5.5; ctx.stroke();
+    path(); ctx.strokeStyle = cutting ? '#fff6cf' : '#e3cf96'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.setLineDash([3, 5]); ctx.lineDashOffset = -(a.walk + b.walk)*4;
+    path(); ctx.strokeStyle = 'rgba(130,95,40,.65)'; ctx.lineWidth = 3; ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+function drawRings(){
+  base();
+  for (const r of G.rings) {
+    const k = r.life/r.max, rad = r.r0 + (r.r1 - r.r0)*(1 - (1 - k)**2);
+    ctx.globalAlpha = 1 - k; ctx.strokeStyle = r.col; ctx.lineWidth = r.w || 4;
+    ctx.beginPath(); ctx.ellipse(r.x, r.y, rad, rad*.62, 0, 0, 7); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+function drawStorm(t){
+  const dk = stormDark(), st = G.storm;
+  if (dk <= 0) return;
+  base();
+  ctx.fillStyle = `rgba(45,50,80,${.4*dk})`; ctx.fillRect(0, 0, W, SKY_H);   // the sky clouds over
+  if (st.phase === 'warn') {
+    const gr = ctx.createLinearGradient(0, 0, 320*dk, 0);
+    gr.addColorStop(0, `rgba(35,45,75,${.32*dk})`); gr.addColorStop(1, 'rgba(35,45,75,0)');
+    ctx.fillStyle = gr; ctx.fillRect(0, SKY_H, 320*dk, H - SKY_H);
+    return;
+  }
+  const x0 = st.x - STORM_W, x1 = st.x;
+  const gr = ctx.createLinearGradient(x0 - 60, 0, x1 + 40, 0);
+  gr.addColorStop(0, 'rgba(35,45,75,0)'); gr.addColorStop(.15, 'rgba(35,45,75,.3)');
+  gr.addColorStop(.9, 'rgba(35,45,75,.3)'); gr.addColorStop(1, 'rgba(35,45,75,0)');
+  ctx.fillStyle = gr; ctx.fillRect(x0 - 60, SKY_H, STORM_W + 100, H - SKY_H);
+  ctx.strokeStyle = 'rgba(210,225,255,.55)'; ctx.lineWidth = 1.6; ctx.beginPath();
+  for (let i=0; i<150; i++) {
+    const x = x0 + ((i*97.3) % STORM_W), y = SKY_H + ((i*53.7 + t*900) % (H - SKY_H));
+    ctx.moveTo(x, y); ctx.lineTo(x - 5, y + 16);
+  }
+  ctx.stroke();
 }
 function gustAt(x){ const g = G.gust; return g.on ? .26*Math.exp(-(((x-g.x)/80)**2)) : 0; }
 function drawTuft(i, t){
@@ -1042,6 +1353,29 @@ function drawMarker(p){
   ctx.beginPath(); ctx.moveTo(x - 9*s, y - 9*s); ctx.lineTo(x + 9*s, y - 9*s); ctx.lineTo(x, y + 2*s); ctx.closePath(); ctx.fill(); ctx.stroke();
   txt(p.connected ? `P${p.slot+1}` : `P${p.slot+1}?`, x, y - 20*s, 15*s, '#fff', 'center', 4);
   if (!p.connected) txt('controller off', x, y - 36, 12, '#ffd2c8', 'center', 3, 700);
+  if (p.pingT > 0) {   // the "!" ping
+    const age = 1.1 - p.pingT, sc = age < .1 ? age/.1*1.2 : Math.max(1, 1.2 - (age - .1)*2);
+    ctx.save(); ctx.globalAlpha = Math.min(1, p.pingT/.25); ctx.translate(x, y - 52); ctx.scale(sc, sc);
+    ctx.fillStyle = p.col.c; ctx.strokeStyle = '#2d1c10'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(-6, 12); ctx.lineTo(0, 22); ctx.lineTo(6, 12); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, 17, 0, 7); ctx.fill(); ctx.stroke();
+    txt('!', 0, 1, 26, '#fff', 'center', 0, 900);
+    ctx.restore();
+  }
+}
+function drawStar(x, y, r, fill, stroke){
+  ctx.beginPath();
+  for (let i=0; i<10; i++) { const a = -Math.PI/2 + i*Math.PI/5, rad = i%2 ? r*.46 : r; ctx.lineTo(x + Math.cos(a)*rad, y + Math.sin(a)*rad); }
+  ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+  if (stroke) { ctx.lineJoin = 'round'; ctx.strokeStyle = stroke; ctx.lineWidth = Math.max(1.5, r*.1); ctx.stroke(); }
+}
+// co-op HUD: the shared basket against the three star targets
+function drawCoopBar(){
+  const x0 = 520, x1 = 820, y = 64, h = 16, t = starT(), top = t[2];
+  ctx.fillStyle = 'rgba(40,26,16,.6)'; rr(ctx, x0 - 5, y - 5, x1 - x0 + 10, h + 10, 13); ctx.fill();
+  ctx.fillStyle = '#ffd84a'; rr(ctx, x0, y, Math.max(h, (x1 - x0)*clamp(G.team/top, 0, 1)), h, 8); ctx.fill();
+  t.forEach((v, i) => { const sx = x0 + (x1 - x0)*v/top; drawStar(sx, y + h/2, 12, G.team >= v ? '#ffd84a' : '#7a6a52', '#3a2b24'); });
+  txt(`🧺 ${G.team}`, x0 - 16, y + h/2, 20, '#fff', 'right', 5, 900);
 }
 function drawHUD(){
   base();
@@ -1057,20 +1391,29 @@ function drawHUD(){
   }
   if (G.state === 'play' || G.state === 'paused' || G.state === 'end') {
     const left = Math.max(0, ROUND - G.clock), m = Math.floor(Math.ceil(left)/60), s = Math.ceil(left) % 60;
-    txt(`${m}:${String(s).padStart(2,'0')}`, W/2, 36, 34, left <= 10 ? '#fff0c0' : '#fff', 'center', 6, 900);
-    txt('until sunset', W/2, 64, 14, '#fff', 'center', 4, 700);
+    const clock = `${m}:${String(s).padStart(2,'0')}`, col = left <= 10 ? '#fff0c0' : '#fff';
+    if (COOP) { txt(clock, W/2, 30, 30, col, 'center', 6, 900); drawCoopBar(); }
+    else { txt(clock, W/2, 36, 34, col, 'center', 6, 900); txt('until sunset', W/2, 64, 14, '#fff', 'center', 4, 700); }
   } else {
-    txt(`practice: ${LV.name.toLowerCase()}`, W/2, 40, 22, '#fff', 'center', 5, 800);
+    txt(`practice: ${LV.name.toLowerCase()}${COOP ? ', co-op' : ''}`, W/2, 40, 22, '#fff', 'center', 5, 800);
   }
 }
 function panel(x, y, w, h){ base(); ctx.fillStyle = 'rgba(40,26,16,.8)'; rr(ctx, x, y, w, h, 24); ctx.fill(); }
+const LOBBY = {x:250, y:136, w:780, h:494, pick:264};
+function pill(cx, cy, l, r, label){
+  ctx.fillStyle = 'rgba(255,250,240,.12)'; rr(ctx, cx - 180, cy - 20, 360, 40, 20); ctx.fill();
+  txt(l, cx - 150, cy, 14, 'rgba(255,240,210,.8)', 'center', 0, 800);
+  txt(r, cx + 150, cy, 14, 'rgba(255,240,210,.8)', 'center', 0, 800);
+  txt(label, cx, cy, 20, '#ffe7a0', 'center', 0, 900);
+}
 function drawLobby(){
-  const x = 250, y = 146, w = 780, h = 456;
+  const {x, y, w, h} = LOBBY;
   panel(x, y, w, h);
-  txt('Harvest Race', W/2, y+58, 60, '#ffe7a0', 'center', 0, 900);
-  txt('Cut the rice. Walk over the sheaves to grab them. Most rice by sunset wins.', W/2, y+108, 20, '#fff3dc', 'center', 0, 700);
+  txt('Harvest Race', W/2, y+56, 60, '#ffe7a0', 'center', 0, 900);
+  txt(COOP ? 'Co-op: one basket for everyone. Fill it by sunset for three stars.'
+           : 'Cut the rice. Walk over the sheaves to grab them. Most rice by sunset wins.', W/2, y+104, 20, '#fff3dc', 'center', 0, 700);
   for (let s=0; s<4; s++) {
-    const cx = x + 40 + s*180, cy = y + 140, p = G.players.find(q => q.slot === s);
+    const cx = x + 40 + s*180, cy = y + 132, p = G.players.find(q => q.slot === s);
     if (p) {
       ctx.fillStyle = p.col.c; rr(ctx, cx, cy, 160, 96, 16); ctx.fill();
       ctx.save(); ctx.translate(cx+34, cy+76); drawRiceBody(p.col, 0, 0, false, true); ctx.restore();
@@ -1084,49 +1427,96 @@ function drawLobby(){
       txt('press A to join', cx+80, cy+62, 15, 'rgba(255,240,210,.85)', 'center', 0, 700);
     }
   }
-  const L = [
-    'Tap A: swing. Three quick taps: a spin.',
+  // field + mode pickers
+  const fy = y + LOBBY.pick;
+  pill(W/2 - 190, fy, '◀ LB', 'RB ▶', `Field: ${LV.name}`);
+  pill(W/2 + 190, fy, '◀ LT', 'RT ▶', `Mode: ${COOP ? 'Co-op' : 'Race'}`);
+  const terr = WALLS.length > 0;
+  const L = COOP ? [
+    'Tap A: swing. Hold A, let go: throw the sickle (it flies back). Y: a "!" over your head.',
+    'A rope joins partners (P1 + P2, P3 + P4). Spread out and walk: it cuts everything between you.',
+    'Swing at the same moment, close together: a double spin. A swing beside a dizzy friend wakes them.',
+    terr ? 'At a wall, push up into your partner for a boost. Midday, a storm soaks sheaves left lying.'
+         : 'Midday, a storm rolls over: the rain soaks any sheaf left lying on the ground.',
+  ] : [
+    'Tap A: swing. Three quick taps: a spin. Y: a "!" over your head.',
     'Hold A, let go: throw the sickle, it flies back. Wait for the ding for a big throw. Tap: call it back.',
-    'Tall rice is slow to wade through, so cut paths to run on. Ducks eat rice left lying around.',
+    terr ? 'Push down off an edge to hop down a terrace. The only way back up is the stairs.'
+         : 'Tall rice is slow to wade through, so cut paths to run on.',
+    'Ducks eat rice left lying around.',
   ];
-  // field picker
-  const fy = y + 268;
-  ctx.fillStyle = 'rgba(255,250,240,.12)'; rr(ctx, W/2 - 230, fy - 20, 460, 40, 20); ctx.fill();
-  txt('◀ LB', W/2 - 200, fy, 15, 'rgba(255,240,210,.8)', 'center', 0, 800);
-  txt('RB ▶', W/2 + 200, fy, 15, 'rgba(255,240,210,.8)', 'center', 0, 800);
-  txt(`Field: ${LV.name}`, W/2, fy, 22, '#ffe7a0', 'center', 0, 900);
-  if (WALLS.length) L[2] = 'Push down off an edge to hop down a terrace. The only way back up is the stairs.';
-  L.forEach((l, i) => txt(l, W/2, y+310 + i*24, 16, '#fff3dc', 'center', 0, 600));
-  txt(G.players.length ? 'Press Start (or G) to begin the day' : 'Press A on each controller to join', W/2, y+390, 24, '#ffe7a0', 'center', 0, 900);
-  txt('View or C: add a CPU      LB / RB or T: field      F: full screen      M: sound      keys: WASD + Space, arrows + Enter', W/2, y+420, 13, 'rgba(255,240,210,.75)', 'center', 0, 600);
+  L.forEach((l, i) => txt(l, W/2, y+304 + i*23, 15, '#fff3dc', 'center', 0, 600));
+  const solo = COOP && G.players.length === 1;
+  txt(!G.players.length ? 'Press A on each controller to join' : solo ? 'Press Start (or G) to begin. View adds a CPU partner.' : 'Press Start (or G) to begin the day',
+      W/2, y+408, 24, '#ffe7a0', 'center', 0, 900);
+  txt('View or C: add a CPU      LB / RB or T: field      LT / RT or O: mode      F: full screen      M: sound', W/2, y+438, 13, 'rgba(255,240,210,.75)', 'center', 0, 600);
+  txt('Keys: WASD + Space (E pings), arrows + Enter (/ pings)', W/2, y+456, 13, 'rgba(255,240,210,.75)', 'center', 0, 600);
   // diagnostics: what the browser can see
   let diag;
   if (!navigator.getGamepads) diag = 'This browser has no gamepad support.';
   else if (!G.padsSeen.length) diag = 'No controllers seen yet: press a button on each one (Chrome only lists a controller after a press).';
   else diag = 'Controllers seen: ' + G.padsSeen.map(p => `${p.index+1}. ${p.id.replace(/\(.*?\)/g,'').trim().slice(0,28)}${p.mapping === 'standard' ? '' : ' (non-standard mapping)'}`).join('   ');
-  txt(diag, W/2, y+442, 12, 'rgba(200,235,200,.85)', 'center', 0, 600);
+  txt(diag, W/2, y+476, 12, 'rgba(200,235,200,.85)', 'center', 0, 600);
   if (!AC || AC.state !== 'running') txt('Sound starts after a click or a key press on this computer.', W/2, y+h+18, 13, '#fff', 'center', 4, 700);
 }
 function drawEnd(){
   const k = clamp(G.endT/.6, 0, 1);
   base(); ctx.fillStyle = `rgba(20,14,30,${.35*k})`; ctx.fillRect(0, SKY_H, W, H-SKY_H);
   if (G.endT < .6) return;
-  const ranked = [...G.players].sort((a, b) => b.score - a.score);
-  const w = 560, h = 150 + ranked.length*70, x = (W-w)/2, y = 150;
+  const ranked = [...G.players].sort((a, b) => b.score - a.score), aw = G.awards;
+  const leftH = COOP ? 350 : 100 + ranked.length*70, rightH = aw.length ? 100 + aw.length*72 : 0;
+  const x = 130, w = 1020, y = 124, h = Math.max(leftH, rightH) + 52;
+  const LX = x + 24, LW = 540, lc = LX + LW/2, RX = x + 594, RW = 402;
   panel(x, y, w, h);
-  txt(G.cleared ? 'Field cleared!' : 'Sunset!', W/2, y+50, 48, '#ffe7a0', 'center', 0, 900);
-  const top = ranked[0].score, max = Math.max(1, top);
-  ranked.forEach((p, i) => {
-    const ry = y + 100 + i*70;
-    ctx.fillStyle = 'rgba(255,250,240,.1)'; rr(ctx, x+24, ry, w-48, 60, 14); ctx.fill();
-    ctx.fillStyle = p.col.c; rr(ctx, x+24, ry, (w-48)*clamp((G.endT-.6)/1, 0, 1)*p.score/max, 60, 14); ctx.globalAlpha = .45; ctx.fill(); ctx.globalAlpha = 1;
-    ctx.save(); ctx.translate(x+64, ry+50); drawRiceBody(p.col, 0, 0, false, p.score === top); ctx.restore();
-    if (p.score === top) txt('👑', x+64, ry+6, 22, '#fff', 'center');
-    txt(`P${p.slot+1} ${p.col.n}${p.input.type === 'bot' ? ' (CPU)' : ''}`, x+100, ry+30, 22, '#fff', 'left', 0, 800);
-    txt(String(p.score), x+w-44, ry+30, 34, '#fff', 'right', 0, 900);
+  txt(G.cleared ? 'Field cleared!' : 'Sunset!', lc, y+50, 48, '#ffe7a0', 'center', 0, 900);
+  if (COOP) drawCoopResult(LX, LW, y);
+  else {
+    const top = ranked[0].score, max = Math.max(1, top);
+    ranked.forEach((p, i) => {
+      const ry = y + 100 + i*70;
+      ctx.fillStyle = 'rgba(255,250,240,.1)'; rr(ctx, LX, ry, LW, 60, 14); ctx.fill();
+      ctx.fillStyle = p.col.c; rr(ctx, LX, ry, LW*clamp((G.endT-.6)/1, 0, 1)*p.score/max, 60, 14); ctx.globalAlpha = .45; ctx.fill(); ctx.globalAlpha = 1;
+      ctx.save(); ctx.translate(LX+40, ry+50); drawRiceBody(p.col, 0, 0, false, p.score === top); ctx.restore();
+      if (p.score === top) txt('👑', LX+40, ry+6, 22, '#fff', 'center');
+      txt(`P${p.slot+1} ${p.col.n}${p.input.type === 'bot' ? ' (CPU)' : ''}`, LX+76, ry+30, 22, '#fff', 'left', 0, 800);
+      txt(String(p.score), LX+LW-20, ry+30, 34, '#fff', 'right', 0, 900);
+    });
+  }
+  // awards, one by one
+  if (aw.length) txt('Awards', RX + RW/2, y+50, 30, '#ffe7a0', 'center', 0, 900);
+  aw.forEach((a, i) => {
+    const t = G.endT - awardAt(i); if (t < 0) return;
+    const cy = y + 100 + i*72, sc = t < .15 ? .6 + t/.15*.5 : Math.max(1, 1.1 - (t - .15)*.6);
+    ctx.save(); ctx.translate(RX + RW/2, cy + 30); ctx.scale(sc, sc); ctx.translate(-(RX + RW/2), -(cy + 30));
+    ctx.fillStyle = 'rgba(255,250,240,.12)'; rr(ctx, RX, cy, RW, 60, 14); ctx.fill();
+    ctx.fillStyle = a.p.col.c; rr(ctx, RX, cy, 10, 60, [14,0,0,14]); ctx.fill();
+    ctx.save(); ctx.translate(RX + 44, cy + 53); ctx.scale(.8, .8); drawRiceBody(a.p.col, 0, 0, a.title === 'Bonk Magnet', a.title !== 'Bonk Magnet'); ctx.restore();
+    txt(a.title, RX + 78, cy + 22, 21, '#ffe7a0', 'left', 0, 900);
+    txt(`P${a.p.slot+1} ${a.p.col.n}: ${a.desc}`, RX + 78, cy + 44, 14, '#fff3dc', 'left', 0, 700);
+    ctx.restore();
   });
-  const fy = y + h - 30;
-  txt(`${G.newBest ? 'New best: ' : 'Best: '}${G.best}      Start: again      View or Q: lobby`, W/2, fy, 16, 'rgba(255,240,210,.85)', 'center', 0, 700);
+  const fy = y + h - 26;
+  const best = COOP ? `${G.newBest ? 'New best basket: ' : 'Best basket: '}${G.coopBest}` : `${G.newBest ? 'New best: ' : 'Best: '}${G.best}`;
+  txt(`${best}      Start: again      View or Q: lobby`, W/2, fy, 16, 'rgba(255,240,210,.85)', 'center', 0, 700);
+}
+function drawCoopResult(LX, LW, y){
+  const lc = LX + LW/2, t = starT();
+  for (let i=0; i<3; i++) {
+    const sx = lc + (i - 1)*100, sy = y + 132, since = G.endT - .9 - i*.45, on = i < G.starsGot && since > 0;
+    const sc = !on ? 1 : since < .18 ? .4 + since/.18*.9 : Math.max(1, 1.3 - (since - .18)*1.5);
+    drawStar(sx, sy, 38*sc, on ? '#ffd84a' : 'rgba(255,255,255,.12)', on ? '#b07d10' : 'rgba(255,255,255,.3)');
+  }
+  txt(`Basket: ${G.team} rice`, lc, y + 206, 32, '#fff', 'center', 0, 900);
+  txt(`★ ${t[0]}      ★★ ${t[1]}      ★★★ ${t[2]}`, lc, y + 240, 15, 'rgba(255,240,210,.8)', 'center', 0, 700);
+  txt(`The ducks ate ${G.lostDuck}. The rain soaked ${G.lostRain}.`, lc, y + 264, 15, 'rgba(255,240,210,.8)', 'center', 0, 700);
+  const ps = G.players, cw = 126, x0 = lc - (ps.length*(cw + 8) - 8)/2;
+  ps.forEach((p, i) => {
+    const cx = x0 + i*(cw + 8), cy = y + 288;
+    ctx.fillStyle = p.col.c; ctx.globalAlpha = .5; rr(ctx, cx, cy, cw, 52, 14); ctx.fill(); ctx.globalAlpha = 1;
+    ctx.save(); ctx.translate(cx + 28, cy + 46); ctx.scale(.75, .75); drawRiceBody(p.col, 0, 0, false, true); ctx.restore();
+    txt(`P${p.slot+1}`, cx + 56, cy + 17, 14, '#fff', 'left', 0, 800);
+    txt(String(p.score), cx + cw - 12, cy + 33, 24, '#fff', 'right', 0, 900);
+  });
 }
 const MENU = {x:440, y:190, w:400, itemY:300, itemH:64, itemW:320};
 function drawPauseMenu(){
@@ -1149,7 +1539,10 @@ function drawPauseMenu(){
 // mouse / touch on the pause menu
 addEventListener('pointerdown', e => {
   const lx = (e.clientX*DPR - OX0)/SC, ly = (e.clientY*DPR - OY0)/SC;
-  if (G.state === 'lobby' && Math.abs(lx - W/2) < 230 && Math.abs(ly - (146 + 268)) < 20) return switchLevel(lx < W/2 - 120 ? -1 : 1);
+  if (G.state === 'lobby' && Math.abs(ly - (LOBBY.y + LOBBY.pick)) < 20) {
+    if (Math.abs(lx - (W/2 - 190)) < 180) return switchLevel(lx < W/2 - 300 ? -1 : 1);
+    if (Math.abs(lx - (W/2 + 190)) < 180) return switchMode();
+  }
   if (G.state !== 'paused') return;
   PAUSE_ITEMS.forEach((_, i) => {
     const y = MENU.itemY + i*MENU.itemH;
@@ -1182,6 +1575,7 @@ function draw(){
     for (let c=0; c<COLS; c++) { const i = r*COLS + c; if (TALL[i]) drawTuft(i, t); }
   }
   while (ei < ents.length) { const e = ents[ei++]; e.duck ? drawDuck(e) : drawPlayer(e); }
+  drawRopes(); drawRings();
   base();
   for (const q of G.parts) {
     const k = q.life/q.max; ctx.fillStyle = q.c;
@@ -1191,6 +1585,7 @@ function draw(){
   ctx.globalAlpha = 1;
   for (const b of G.booms) drawBoom(b);
   for (const p of G.players) if (p.charging && p.hasSickle) drawAim(p);
+  drawStorm(t);
   // evening light
   if (f > .6) {
     base();
@@ -1275,6 +1670,7 @@ const sfxTink = () => tone(1800, .06, 'triangle', .06);
 const sfxCatch = () => { tone(1320, .08, 'triangle', .1); tone(1980, .1, 'sine', .07, null, .03); };
 const sfxBonk = () => tone(240, .2, 'square', .07, 80);
 const sfxHop = () => tone(520, .09, 'triangle', .06, 780);
+const sfxThunder = () => { noise(1.4, 260, 50, .3, .7); noise(.5, 900, 120, .12, .9, .08); tone(55, 1, 'sine', .12, 38); };
 const sfxThud = () => { tone(130, .14, 'sine', .16, 55); noise(.08, 900, 300, .07, 1.2); };
 const sfxJoin = () => { tone(784, .08, 'triangle', .1); tone(1175, .14, 'triangle', .1, null, .07); };
 const sfxQuack = () => { tone(430, .13, 'sawtooth', .045, 250); tone(415, .1, 'sawtooth', .03, 260, .15); };
@@ -1324,8 +1720,8 @@ requestAnimationFrame(frame);
 
 window.__harvest = {
   G, N, get tall(){ return tallCount; },
-  join, addBot, start: beginRound, lobby: toLobby, startPressed, switchLevel, tierAt, wallTop,
-  get level(){ return LV.id; }, get walls(){ return WALLS; },
+  join, addBot, start: beginRound, lobby: toLobby, startPressed, switchLevel, switchMode, tierAt, wallTop, wallBot,
+  get level(){ return LV.id; }, get walls(){ return WALLS; }, get coop(){ return COOP; }, ropePairs, starT, endRound,
   manual(on){ G.manual = !!on; },
   step(n=1){ for (let k=0; k<n; k++) update(1/60); draw(); },
 };
