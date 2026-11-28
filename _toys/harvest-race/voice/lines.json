@@ -1,0 +1,33 @@
+{
+ "voice": "Charlie - Deep, Confident, Energetic",
+ "model": "eleven_multilingual_v2",
+ "lines": {
+  "nice": "Nice!",
+  "double": "Double cut!",
+  "mega": "Mega cut!",
+  "ricestorm": "RICE STORM!",
+  "unstop": "Un-stop-pable!",
+  "ready": "Get ready...",
+  "harvest": "Harvest!",
+  "fever": "Harvest fever!",
+  "together": "Together!",
+  "perfect": "Perfect!",
+  "handoff": "Hand-off!",
+  "shoo": "Shoo!",
+  "penned": "Penned!",
+  "delivered": "Delivered!",
+  "golden": "Golden duck!",
+  "goldgot": "You caught the golden duck!",
+  "boar": "Look out, boar!",
+  "bonk": "Bonk!",
+  "star1": "One star!",
+  "star2": "Two stars!",
+  "star3": "Three stars!",
+  "cleared": "Field cleared!",
+  "sunset": "Sunset!",
+  "winner": "Winner!",
+  "newhat": "New hat!",
+  "milestone": "What a haul!",
+  "daily": "Today's field!"
+ }
+}
