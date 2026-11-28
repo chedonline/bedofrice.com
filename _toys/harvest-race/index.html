@@ -48,8 +48,33 @@ const DUCKS = 3, DUCK_EAT = 2.2, DIZZY = 0.8;
 const ROPE_MIN = 90, ROPE_MAX = 340, ROPE_R = 13, ROPE_DRAG = .72;
 const SYNC_WIN = .22, SYNC_D = 170;
 const STORM_AT = 40, STORM_W = 360, STORM_SPEED = 115, SOAK = .7;
-const STARS_DUO = [.55, .75, .92], STARS_SOLO = [.35, .55, .75], STARS_CREW = [.6, .8, .95];   // share of the field's rice for 1, 2, 3 stars (1 player, 2, 3 or 4)
+const STARS_DUO = [.6, .85, 1.05], STARS_SOLO = [.4, .6, .8], STARS_CREW = [.65, .9, 1.1];   // share of the field's rice for 1, 2, 3 stars (1 player, 2, 3 or 4); over 1 = you need a fever
 const CREW_DUCKS = 2;   // co-op: extra ducks for each player past two
+// co-op days: each day is a field plus one or two new things to deal with
+const CARRY_MAX = 12, CARRY_SLOW = .032, HANDOFF_BONUS = 1.25;  // carry days: what you pick up rides on your back
+const BEAT = .5, PERFECT_W = .08, GOOD_W = .16;   // the rhythm for the thresher pedal and for planting (120 bpm)
+const THRESH_AUTO = 1.2;                           // s per sheaf when nobody is on the pedal
+const CART_MAX = 40, CART_SPEED = 95, PULLEY_MAX = 30, PULLEY_AUTO = 30, PULLEY_CRANK = 26;
+const PEN_BONUS = 10, FLOCK_EVERY = [7, 12], FLOCK_EAT = .32, FLOCK_STAY = 12, SEEDS = 12;
+const FEVER_FILL = 1.6, FEVER_DRAIN = 10, FEVER_T = 6, FEVER_CD = 10;   // Harvest Fever: fill the meter, double rice
+const DAYS = [
+  {id:'d1', name:'First harvest',   field:'paddy',    f:{rope:1},
+   hint:'Fill the basket together. Fill the fever meter for double rice.'},
+  {id:'d2', name:'The terraces',    field:'terraces', f:{rope:1, boost:1, storm:1},
+   hint:'At a wall, push up into your partner for a boost. A midday storm soaks sheaves left lying.'},
+  {id:'d3', name:'Sparrows',        field:'paddy',    f:{rope:1, sparrows:1},
+   hint:'Sparrows swoop in to eat the rice. A swing, a throw or a ping (Y) scares them off.'},
+  {id:'d4', name:'The thresher',    field:'paddy',    f:{rope:1, carry:1, thresher:1}, stars:[.3, .45, .6],
+   hint:'Carry sheaves to the hopper. On the pedal, tap on the beat: Perfect = double rice.'},
+  {id:'d5', name:'Buffalo cart',    field:'paddy',    f:{rope:1, carry:1, cart:1, barn:1}, stars:[.32, .48, .64],
+   hint:'Load the cart, then press at the buffalo\'s head to lead it to the barn. Press again to let go.'},
+  {id:'d6', name:'The pulley',      field:'terraces', f:{rope:1, carry:1, pulley:1, boost:1}, stars:[.35, .5, .65],
+   hint:'The barn is up top. Load the pulley at the bottom; tap the crank up top to hoist it faster.'},
+  {id:'d7', name:'Duck pen',        field:'paddy',    f:{rope:1, pen:1}, ducks:6,
+   hint:'Herd the ducks into the pen in the corner: +10 each. One of you alone can\'t corner them.'},
+  {id:'d8', name:'Planting season', field:'paddy',    f:{plant:1}, ducks:0, stars:[.38, .58, .8],
+   hint:'Plant along the strings. Grab seedlings at the tray. At sunset, watch it all grow.'},
+];
 
 // ---- layout ---------------------------------------------------------------
 const SKY_H = 108;
@@ -78,13 +103,24 @@ const LEVELS = [
 ];
 let levelIdx = 1, LV = LEVELS[1], WALLS = LV.walls;   // a fresh browser starts on the terraces
 try { const saved = localStorage.getItem('harvestRaceField'); if (saved) levelIdx = Math.max(0, LEVELS.findIndex(l => l.id === saved)); } catch(e) {}
-function setLevel(i){
+function setLevel(i, save = true){
   levelIdx = (i + LEVELS.length) % LEVELS.length; LV = LEVELS[levelIdx]; WALLS = LV.walls;
-  try { localStorage.setItem('harvestRaceField', LV.id); } catch(e) {}
+  if (save) try { localStorage.setItem('harvestRaceField', LV.id); } catch(e) {}
 }
 setLevel(levelIdx);
+let raceLevel = levelIdx;   // the race field, kept apart from the co-op day's field
 let COOP = false;   // Race (most rice wins) or Co-op (one shared basket)
 try { COOP = localStorage.getItem('harvestRaceMode') === 'coop'; } catch(e) {}
+let dayIdx = 0, DAY = DAYS[0], F = {};   // F = the features switched on today (none in a race)
+try { dayIdx = Math.min(DAYS.length - 1, Math.max(0, +localStorage.getItem('harvestCoopDay') || 0)); } catch(e) {}
+let DAY_STARS = {};   // best stars per co-op day
+try { DAY_STARS = JSON.parse(localStorage.getItem('harvestCoopStars') || '{}') || {}; } catch(e) {}
+const totalStars = () => DAYS.reduce((s, d) => s + (DAY_STARS[d.id] || 0), 0);
+function applyMode(){
+  if (COOP) { DAY = DAYS[dayIdx]; F = DAY.f; setLevel(LEVELS.findIndex(l => l.id === DAY.field), false); }
+  else { F = {}; setLevel(raceLevel); }
+}
+const roundLen = () => ROUND;
 function wallTop(k, x){ const w = WALLS[k]; return w.y + w.a*Math.sin(x*w.f + w.ph) + w.b*Math.sin(x*w.g + w.q); }
 const wallBot = (k, x) => wallTop(k, x) + WALL_H;
 function tierAt(x, y){ let t = 0; for (let k=0; k<WALLS.length; k++) if (y > wallTop(k, x) + WALL_H/2) t = k+1; return t; }
@@ -106,7 +142,12 @@ const G = {
   gust:{on:false, x:-300, next:4}, toast:null, padsSeen:[], manual:false, best:0,
   rings:[], team:0, lostDuck:0, lostRain:0, storm:{phase:'none'}, awards:[], maxValue:1, roundPlayers:1,
   starsGot:0, endSfx:new Set(), coopBest:0, ropeSfxT:0,
+  flyers:[], tosses:[], confetti:[], flocks:[], flockT:6, lostBirds:0, starNow:0, starFx:null, barPulse:0,
+  fever:0, feverCD:0, feverM:0, feverNote:0, lastDrum:-1, sfxT:0,
 };
+// this day's stations (thresher, barn, cart, pulley, pen, seedling tray) and the spots kept free of rice
+let ST = {}, ZONES = [], PLANT = [];
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 try { G.best = +localStorage.getItem('harvestRaceBest') || 0; } catch(e) {}
 
 const rand = (a,b) => a + Math.random()*(b-a);
@@ -177,6 +218,20 @@ function paintBG(){
   }
   bg.strokeStyle = 'rgba(50,35,15,.35)'; bg.lineWidth = 4;
   rr(bg, PADDY.x0+2, PADDY.y0+2, PADDY.x1-PADDY.x0-4, PADDY.y1-PADDY.y0-4, 9); bg.stroke();
+  if (F.plant) paintFlood(rnd);
+}
+// planting season: the paddy flooded, with a planting string along every row
+function paintFlood(rnd){
+  rr(bg, PADDY.x0, PADDY.y0, PADDY.x1-PADDY.x0, PADDY.y1-PADDY.y0, 10); bg.fillStyle = 'rgba(120,170,205,.42)'; bg.fill();
+  for (let i=0; i<260; i++) {
+    const x = PADDY.x0 + 10 + rnd()*(PADDY.x1-PADDY.x0-30), y = PADDY.y0 + 6 + rnd()*(PADDY.y1-PADDY.y0-12);
+    bg.strokeStyle = 'rgba(235,248,255,.35)'; bg.lineWidth = 1.2; bg.beginPath(); bg.moveTo(x, y); bg.lineTo(x + 6 + rnd()*12, y); bg.stroke();
+  }
+  for (let y = PADDY.y0 + 26; y < PADDY.y1 - 8; y += 42) {
+    bg.strokeStyle = 'rgba(255,250,235,.55)'; bg.lineWidth = 1.2;
+    bg.beginPath(); bg.moveTo(PADDY.x0 + 12, y + 3); bg.lineTo(PADDY.x1 - 12, y + 3); bg.stroke();
+    for (const x of [PADDY.x0 + 12, PADDY.x1 - 12]) { bg.fillStyle = '#7a5a34'; bg.fillRect(x - 2, y - 8, 4, 13); }
+  }
 }
 // trace y = fy(x) from xa to xb (lineTo; start with moveTo if first)
 function along(c, fy, xa, xb, first){
@@ -263,9 +318,36 @@ function resetField(){
     tallCount += TALL[i]; if (TALL[i]) value += GOLD[i] ? GOLD_VALUE : 1;
   }
   TOTAL = tallCount; G.maxValue = value;
+  PLANT = [];
+  if (F.plant) {   // planting season: bare flooded paddy, a planting spot every 48 x 42 px along the strings
+    TALL.fill(0); tallCount = 0; TOTAL = 0;
+    for (let r=0, y=PADDY.y0 + 26; y < PADDY.y1 - 8; r++, y += 42) for (let c=0, x=PADDY.x0 + 34; x < PADDY.x1 - 16; c++, x += 48)
+      if (!noRiceAt(x, y)) PLANT.push({x, y, r, c, s:0, q:0, t:0, tilt:0});
+    G.maxValue = PLANT.length*3;
+  }
+  if (F.pen) G.maxValue += dayDucks()*PEN_BONUS;
+}
+function buildStations(){
+  ST = {}; ZONES = [];
+  const zone = (x0, y0, x1, y1) => ZONES.push({x0, y0, x1, y1});
+  if (F.thresher) {
+    ST.thresher = {x:640, y:640, hop:{x:578, y:654}, ped:{x:704, y:658}, qN:0, qV:0, auto:0, combo:0, spin:0, pedT:0, by:null, lastBeat:-1};
+    zone(520, 590, 760, 700);
+  }
+  if (F.barn) { ST.barn = {x:86, y:412, r:58}; zone(30, 330, 150, 496); }
+  if (F.cart) ST.cart = {x:330, y:412, hx:1, hy:0, load:0, loadN:0, driver:null, walk:0, vx:0, vy:0};
+  if (F.pulley) {
+    const x = 1150, yTop = wallTop(0, x) - 34, yBot = wallBot(2, x) + 56;
+    ST.pulley = {x, yTop, yBot, y:yBot, load:0, loadN:0, state:'down', idle:0, crank:{x:1200, y:yTop + 4}, wheel:0};
+    ST.barn = {x:1036, y:yTop - 6, r:46};
+    zone(1120, PADDY.y0, 1182, PADDY.y1); zone(980, PADDY.y0, 1230, wallTop(0, 1100) - DIKE);
+  }
+  if (F.pen) { ST.pen = {x0:1074, y0:556, x1:1228, y1:684}; zone(1060, 544, 1240, 700); }
+  if (F.plant) { ST.tray = {x:66, y:412}; zone(30, 350, 116, 474); }
 }
 // no rice on a wall, on the dike along its top, right under it, or on the stair landings
 function noRiceAt(x, y){
+  for (const z of ZONES) if (x > z.x0 && x < z.x1 && y > z.y0 && y < z.y1) return true;
   for (let k=0; k<WALLS.length; k++) {
     const top = wallTop(k, x);
     if (y > top - DIKE - 3 && y < top + WALL_H + 10) return true;
@@ -312,14 +394,16 @@ function join(input){
     cd:0, slashT:0, score:0, dizzy:0, walk:0, squash:0, combo:0, comboT:0, inRice:false,
     connected:true, ai:null, catchT:0, hitBy:null, skid:0, lean:0, wasMoving:false,
     swing:0, lastSlash:-9, slashDur:.2, hop:0, full:false, z:0, vz:0, tier:tierAt(x, y), onStair:false, stairK:-1, stairX:0,
-    st:newStats(), ping:false, pingPrev:false, pingT:0, pushT:0, wantUp:0, vault:null, ropeDrag:0, syncT:-9};
+    st:newStats(), ping:false, pingPrev:false, pingT:0, pushT:0, wantUp:0, vault:null, ropeDrag:0, syncT:-9,
+    load:0, loadN:0, handCD:0, fullT:0, seeds:SEEDS, rowStreak:0, lastPlant:null, pedCD:0};
   G.players.push(p); G.players.sort((a,b) => a.slot - b.slot);
   toast(`P${slot+1} ${p.col.n} joined (${deviceLabel(p)})`);
   sfxJoin(); rumble(p, 120, .4, .4);
   return p;
 }
 // what each player did this round, for the end-of-round awards
-const newStats = () => ({cut:0, picked:0, gold:0, bonked:0, bonks:0, hops:0, climbs:0, ducks:0, pings:0, helps:0, syncs:0, dist:0});
+const newStats = () => ({cut:0, picked:0, gold:0, bonked:0, bonks:0, hops:0, climbs:0, ducks:0, pings:0, helps:0, syncs:0, dist:0,
+  birds:0, penned:0, delivered:0, handoffs:0, perfects:0, planted:0, drove:0, cranks:0});
 // co-op: you can drop in while the day is on
 const canJoinNow = () => G.state === 'lobby' || (COOP && (G.state === 'play' || G.state === 'count'));
 function deviceLabel(p){
@@ -335,12 +419,13 @@ function placePlayers(){
     p.cd = 0; p.dizzy = 0; p.combo = 0; p.ai = null; p.hitBy = null; p.prev = true; p.buffer = 0;
     p.z = p.vz = 0; p.tier = tierAt(p.x, p.y); p.onStair = false;
     p.st = newStats(); p.vault = null; p.pushT = p.wantUp = p.pingT = p.ropeDrag = 0; p.syncT = -9;
+    p.load = p.loadN = p.handCD = p.fullT = p.rowStreak = p.pedCD = 0; p.seeds = SEEDS; p.lastPlant = null;
   }
 }
 // ---- co-op ---------------------------------------------------------------------
 // partners share a rope: P1 + P2, P3 + P4
 function ropePairs(){
-  if (!COOP) return [];
+  if (!COOP || !F.rope) return [];
   const ps = G.players, out = [];
   for (let i=0; i+1<ps.length; i+=2) out.push([ps[i], ps[i+1]]);
   return out;
@@ -351,8 +436,10 @@ function ropePartner(p){ for (const [a, b] of ropePairs()) { if (a === p) return
 function ropes(){
   for (const [a, b] of ropePairs()) {
     let dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
-    if (d > ROPE_MAX && !(a.vault && b.vault)) {
-      const ex = d - ROPE_MAX, wa = a.vault ? 0 : b.vault ? 1 : .5;
+    // someone mid-boost or leading the buffalo holds firm; the rope pulls the other one
+    const firm = p => p.vault || (ST.cart && ST.cart.driver === p);
+    if (d > ROPE_MAX && !(firm(a) && firm(b))) {
+      const ex = d - ROPE_MAX, wa = firm(a) ? 0 : firm(b) ? 1 : .5;
       for (const [p, w, s] of [[a, wa, 1], [b, 1 - wa, -1]]) {
         if (!w) continue;
         const py = p.y;
@@ -375,6 +462,7 @@ function ropes(){
       rumble(a, 50, .06, .3); rumble(b, 50, .06, .3);
     }
     scareDucks((a.x + b.x)/2, (a.y + b.y)/2, d/2 + 30, null);
+    if (F.sparrows) scareBirds((a.x + b.x)/2, (a.y + b.y)/2, d/2 + 40, a);
   }
 }
 // swing at the same moment as a friend close by: one big double spin between you (humans only)
@@ -397,6 +485,8 @@ function doubleSpin(p, q){
   [0, 4, 7, 12].forEach((s, i) => tone(392*2**(s/12), .22, 'triangle', .1, null, i*.04));
   noise(.35, 2600, 500, .2);
   helpUp(p, mx, my, R); scareDucks(mx, my, R + 60, p);
+  if (F.sparrows) scareBirds(mx, my, R + 80, p);
+  feverAdd(20);
 }
 // a swing right next to a dizzy friend wakes them up
 function helpUp(p, x, y, r){
@@ -424,6 +514,365 @@ function tryBoost(p, dt){
   helper.squash = below ? .42 : -.2; helper.st.helps++;
   addText(helper.x, helper.y - 58, below ? 'hup!' : 'heave!', '#fff', 20);
   tone(300, .18, 'triangle', .1, 720); rumble(p, 120, .3, .5); rumble(helper, 160, .5, .3);
+}
+
+// ---- co-op days: banking, fever, carrying, stations, pests, planting ----------------------
+const dayDucks = () => COOP && DAY.ducks !== undefined ? DAY.ducks : DUCKS + (COOP ? Math.max(0, G.players.length - 2)*CREW_DUCKS : 0);
+// rice into the basket: little sheaves fly up to the basket bar, and it counts when they land
+function bankFrom(x, y, v, n = 1){
+  if (!COOP || v <= 0) return;
+  n = Math.max(1, Math.min(n, 14));
+  for (let k=0; k<n; k++) {
+    if (G.flyers.length > 90) { G.team += v/n; checkStars(); continue; }
+    G.flyers.push({x:x + rand(-10, 10), y:y + rand(-10, 10), v:v/n, t:-k*.035, dur:rand(.45, .62), gold:v/n >= 2.5});
+  }
+}
+function updateFlyers(dt){
+  for (const f of G.flyers) {
+    f.t += dt;
+    if (f.t < f.dur) continue;
+    f.done = true; G.team += f.v; G.barPulse = 1; checkStars();
+    // a tick that climbs an octave as the basket fills
+    if (G.t - G.sfxT > .045) { G.sfxT = G.t; tone(1046*2**clamp(G.team/Math.max(1, starT()[2]), 0, 1.2), .05, 'sine', .035); }
+  }
+  G.flyers = G.flyers.filter(f => !f.done);
+  G.barPulse = Math.max(0, G.barPulse - dt*4);
+}
+const BAR = {x0:520, x1:820, y:64, h:16};
+const barStarX = i => { const t = starT(); return BAR.x0 + (BAR.x1 - BAR.x0)*t[i]/t[2]; };
+// a star reached mid-round: chord, rumble, confetti from the bar
+function checkStars(){
+  if (!COOP || G.state !== 'play') return;
+  const n = starT().filter(v => G.team >= v).length;
+  if (n <= G.starNow) return;
+  G.starNow = n; G.starFx = {n, t:0};
+  [0, 4, 7, 12, 16].slice(0, 2 + n).forEach((s, i) => tone(659*2**(s/12), .32, 'triangle', .11, null, i*.07));
+  for (const p of G.players) rumble(p, 250, .5, .6);
+  confettiBurst(barStarX(n - 1), BAR.y + 8, 46);
+  G.shake = Math.max(G.shake, 3);
+}
+const CONF = ['#ff7b6b', '#38b7a8', '#f2b632', '#9a85ef', '#fff3a8', '#ffffff'];
+function confettiBurst(x, y, n){
+  for (let k=0; k<n && G.confetti.length < 320; k++) {
+    const a = rand(0, Math.PI*2), s = rand(120, 420);
+    G.confetti.push({x, y, vx:Math.cos(a)*s, vy:Math.sin(a)*s - 220, r:rand(0, 6), vr:rand(-12, 12), c:CONF[k%6], life:0, max:rand(1.2, 2.2), w:rand(5, 9)});
+  }
+}
+function confettiRain(n){
+  for (let k=0; k<n && G.confetti.length < 320; k++)
+    G.confetti.push({x:rand(0, W), y:rand(-120, -10), vx:rand(-40, 40), vy:rand(60, 160), r:rand(0, 6), vr:rand(-8, 8), c:CONF[k%6], life:0, max:rand(3, 4.5), w:rand(5, 9)});
+}
+function updateConfetti(dt){
+  for (const c of G.confetti) { c.life += dt; c.vy = Math.min(c.vy + 520*dt, 230); c.vx *= Math.exp(-dt*1.5); c.x += c.vx*dt; c.y += c.vy*dt; c.r += c.vr*dt; }
+  G.confetti = G.confetti.filter(c => c.life < c.max && c.y < H + 20);
+}
+// Harvest Fever: picking up fast fills the meter; full = 6 s of double rice
+function feverAdd(a){
+  if (!COOP || G.state !== 'play' || G.fever > 0 || G.feverCD > 0) return;
+  G.feverM += a;
+  if (G.feverM < 100) return;
+  G.feverM = 100; G.fever = FEVER_T; G.feverNote = 0;
+  [0, 4, 7, 12, 16, 19, 24].forEach((s, i) => tone(523.25*2**(s/12), .14, 'square', .045, null, i*.045));
+  for (const p of G.players) rumble(p, 300, .6, .6);
+  confettiBurst(W/2, BAR.y + 30, 50); G.shake = Math.max(G.shake, 4);
+}
+function updateFever(dt){
+  if (G.fever > 0) {
+    G.fever -= dt; G.feverM = 100*Math.max(0, G.fever)/FEVER_T;
+    G.feverNote -= dt;
+    if (G.feverNote <= 0) { G.feverNote = .125; tone(523.25*2**([0, 4, 7, 12, 16, 12, 7, 4][Math.floor(G.t*8) % 8]/12), .09, 'square', .022); }
+    if (G.fever <= 0) { G.fever = 0; G.feverM = 0; G.feverCD = FEVER_CD; }
+  } else { G.feverCD = Math.max(0, G.feverCD - dt); G.feverM = Math.max(0, G.feverM - FEVER_DRAIN*dt); }
+}
+const feverX = () => G.fever > 0 ? 2 : 1;
+
+// carry days: what you pick up rides on your back (heavier = slower) until you drop it at a station
+function unload(p, max){
+  const n = Math.min(p.loadN, max); if (n <= 0) return {n:0, v:0};
+  const v = n === p.loadN ? p.load : p.load*n/p.loadN;
+  p.load -= v; p.loadN -= n; if (!p.loadN) p.load = 0;
+  p.score += v; p.st.delivered += v; p.squash = Math.max(p.squash, .2);
+  return {n, v};
+}
+// sheaves arcing from someone's back into a station, or to a friend
+function toss(x0, y0, x1, y1, n){
+  for (let k=0; k<Math.min(n, 8); k++) G.tosses.push({x0:x0 + rand(-6, 6), y0, x1:x1 + rand(-8, 8), y1:y1 + rand(-4, 4), t:-k*.05, dur:.32});
+}
+// walk into a friend while carrying to hand your load over: it's worth 25% more
+function handoffs(){
+  for (const a of G.players) for (const b of G.players) {
+    if (a === b || !a.loadN || b.loadN >= CARRY_MAX || a.handCD > 0 || b.handCD > 0 || a.vault || b.vault) continue;
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+    if (d > 34 || d < 1 || (dx*a.vx + dy*a.vy)/d < 60) continue;
+    const n = Math.min(a.loadN, CARRY_MAX - b.loadN), v = a.load*n/a.loadN;
+    a.load -= v; a.loadN -= n; if (!a.loadN) a.load = 0;
+    b.load += v*HANDOFF_BONUS; b.loadN += n; a.handCD = b.handCD = .7; a.st.handoffs++;
+    toss(a.x, a.y - 30, b.x, b.y - 44, n);
+    addText(b.x, b.y - 78, 'hand-off! +25%', '#d6ffb8', 18);
+    tone(784, .07, 'triangle', .08); tone(1175, .09, 'triangle', .08, null, .06); rumble(a, 60, .2, .3); rumble(b, 90, .3, .3);
+    feverAdd(6);
+  }
+}
+function updateBarn(){
+  const B = ST.barn;
+  for (const p of G.players) if (p.loadN && Math.hypot(p.x - B.x, p.y - B.y) < B.r) {
+    const {n, v} = unload(p, 99); toss(p.x, p.y - 30, B.x, B.y - 34, n); bankFrom(B.x, B.y - 44, v, n); sfxDump();
+  }
+}
+// the thresher: drop sheaves in the hopper; on the pedal, tap on the beat (Perfect = double)
+const beatOff = () => { const ph = G.t/BEAT; return Math.abs(ph - Math.round(ph))*BEAT; };
+function threshOne(T, mult){
+  const v = T.qV/T.qN; T.qV -= v; T.qN--; if (!T.qN) T.qV = 0;
+  bankFrom(T.x + 46, T.y - 34, v*mult, mult > 1 ? 2 : 1);
+  for (let k=0; k<6 && G.parts.length < 420; k++)
+    G.parts.push({x:T.x + 46, y:T.y - 6, z:rand(20, 34), vx:rand(20, 120), vy:rand(-30, 30), vz:rand(80, 200), life:0, max:rand(.4, .7), c:mult > 1 ? '#ffe066' : '#f2cf63'});
+}
+function updateThresher(dt){
+  const T = ST.thresher;
+  for (const p of G.players) if (p.loadN && dist(p, T.hop) < 36) {
+    const {n, v} = unload(p, 99); T.qN += n; T.qV += v; toss(p.x, p.y - 30, T.hop.x, T.hop.y - 52, n); sfxDump();
+  }
+  T.by = G.players.find(p => dist(p, T.ped) < 26 && p.z <= 0 && !p.vault) || null;
+  if (T.qN && !T.by) { T.auto += dt; if (T.auto >= THRESH_AUTO) { T.auto = 0; threshOne(T, 1); } } else T.auto = 0;
+  T.spin += dt*(T.pedT > 0 ? 16 : T.qN ? 3 : .6); T.pedT = Math.max(0, T.pedT - dt);
+}
+function pedal(p){
+  const T = ST.thresher; if (p.pedCD > 0) return; p.pedCD = .18;
+  T.pedT = .18; p.squash = .3;
+  if (!T.qN) { tone(180, .05, 'triangle', .05); return; }
+  const off = beatOff();
+  if (off < PERFECT_W) {
+    T.combo++; threshOne(T, 2); p.st.perfects++; feverAdd(8);
+    addText(T.ped.x, T.ped.y - 72, T.combo >= 3 ? `Perfect x${T.combo}` : 'Perfect!', '#ffe066', 20 + Math.min(10, T.combo));
+    tone(784*2**(Math.min(T.combo, 12)/12), .12, 'triangle', .1);
+    G.rings.push({x:T.ped.x, y:T.ped.y, r0:10, r1:54, life:0, max:.35, col:'#ffe066', w:5});
+    rumble(p, 70, .3, .4); G.shake = Math.max(G.shake, 1.5);
+  } else if (off < GOOD_W) {
+    T.combo = 0; threshOne(T, 1); addText(T.ped.x, T.ped.y - 66, 'good', '#fff', 15); tone(523, .08, 'triangle', .07); rumble(p, 40, .1, .2);
+  } else { T.combo = 0; addText(T.ped.x, T.ped.y - 62, 'clunk', '#ffd2c8', 15); tone(140, .1, 'square', .05, 90); }
+}
+// the buffalo cart: press at the buffalo's head to lead it (press again to let go); load it at the back;
+// it unloads itself when it reaches the barn
+const cartHead = c => ({x:c.x + c.hx*34, y:c.y + c.hy*34});
+const cartBack = c => ({x:c.x - c.hx*40, y:c.y - c.hy*40});
+function updateCart(dt){
+  const c = ST.cart, d = c.driver;
+  let vx = 0, vy = 0;
+  if (d && (!G.players.includes(d) || d.dizzy > 0)) c.driver = null;
+  else if (d) {
+    const h = cartHead(c), dx = d.x - h.x, dy = d.y - h.y, dd = Math.hypot(dx, dy);
+    if (dd > 30) {
+      const sp = CART_SPEED*(tallNear(c.x, c.y, 24) ? .7 : 1)*Math.min(1, (dd - 30)/30);
+      vx = dx/dd*sp; vy = dy/dd*sp;
+      const k = Math.min(1, dt*3); c.hx += (dx/dd - c.hx)*k; c.hy += (dy/dd - c.hy)*k;
+      const m = Math.hypot(c.hx, c.hy) || 1; c.hx /= m; c.hy /= m;
+      d.st.drove += Math.hypot(vx, vy)*dt;
+    }
+    if (dd > 80) { d.x = h.x + dx/dd*80; d.y = h.y + dy/dd*80; }   // the reins
+  }
+  c.vx = vx; c.vy = vy;
+  c.x = clamp(c.x + vx*dt, PADDY.x0 + 40, PADDY.x1 - 40); c.y = clamp(c.y + vy*dt, PADDY.y0 + 30, PADDY.y1 - 16);
+  c.walk += Math.hypot(vx, vy)*dt*.06;
+  if (Math.hypot(vx, vy) > 20) rustleAt(c.x, c.y, 40, dt*10);
+  const b = cartBack(c);
+  for (const p of G.players) if (p.loadN && p !== c.driver && dist(p, b) < 38 && c.loadN < CART_MAX) {
+    const {n, v} = unload(p, CART_MAX - c.loadN); c.loadN += n; c.load += v; toss(p.x, p.y - 30, b.x, b.y - 26, n); sfxDump();
+    if (c.loadN >= CART_MAX) addText(c.x, c.y - 70, 'cart full!', '#fff', 18);
+  }
+  if (c.loadN && Math.hypot(c.x - ST.barn.x, c.y - ST.barn.y) < 150) {
+    bankFrom(c.x, c.y - 40, c.load, Math.min(14, c.loadN));
+    addText(ST.barn.x + 30, ST.barn.y - 90, `Delivered! ${Math.round(c.load)}`, '#ffe7a0', 26);
+    c.load = c.loadN = 0; sfxFanfare(); G.shake = Math.max(G.shake, 3);
+    for (const p of G.players) rumble(p, 200, .4, .4);
+    if (d) feverAdd(30);
+  }
+}
+function takeReins(p){
+  const c = ST.cart;
+  if (c.driver === p) { c.driver = null; addText(p.x, p.y - 60, 'let go', '#fff', 14); tone(440, .08, 'triangle', .06, 330); return true; }
+  if (!c.driver && dist(p, cartHead(c)) < 40) {
+    c.driver = p; addText(p.x, p.y - 60, 'giddy up!', '#fff', 18); tone(330, .1, 'sawtooth', .05, 220); tone(660, .12, 'triangle', .07, null, .08);
+    rumble(p, 120, .4, .3); return true;
+  }
+  return false;
+}
+// the pulley: load the basket at the bottom; it rises by itself, faster if someone taps the crank up top
+function updatePulley(dt){
+  const P = ST.pulley;
+  P.wheel += dt*(P.state === 'up' ? 2 : P.state === 'back' ? -6 : 0);
+  if (P.state === 'down') {
+    for (const p of G.players) if (p.loadN && Math.hypot(p.x - P.x, p.y - P.yBot) < 40 && P.loadN < PULLEY_MAX) {
+      const {n, v} = unload(p, PULLEY_MAX - P.loadN); P.loadN += n; P.load += v; P.idle = 0; toss(p.x, p.y - 30, P.x, P.yBot - 20, n); sfxDump();
+    }
+    if (P.loadN) { P.idle += dt; if (P.idle > 1.5 || P.loadN >= PULLEY_MAX) { P.state = 'up'; tone(392, .12, 'triangle', .06, 523); } }
+  } else if (P.state === 'up') {
+    P.y -= PULLEY_AUTO*dt;
+    if (P.y <= P.yTop) {
+      P.y = P.yTop; bankFrom(P.x, P.yTop - 20, P.load, Math.min(14, P.loadN));
+      addText(P.x - 20, P.yTop - 60, `+${Math.round(P.load)}`, '#ffe7a0', 24); sfxDump(); tone(988, .12, 'triangle', .08); tone(1318, .14, 'triangle', .07, null, .07);
+      P.load = P.loadN = 0; P.state = 'back';
+    }
+  } else if (P.state === 'back') { P.y += 240*dt; if (P.y >= P.yBot) { P.y = P.yBot; P.state = 'down'; P.idle = 0; } }
+}
+function crank(p){
+  const P = ST.pulley; if (p.pedCD > 0) return; p.pedCD = .15; p.squash = .25; P.wheel += 1.2;
+  if (P.state === 'down' && P.loadN) P.state = 'up';
+  if (P.state === 'up') {
+    P.y = Math.max(P.yTop, P.y - PULLEY_CRANK); p.st.cranks++;
+    tone(330 + (P.yBot - P.y)/(P.yBot - P.yTop)*500, .07, 'sawtooth', .035); rumble(p, 50, .3, .1);
+  } else tone(200, .04, 'triangle', .04);
+}
+// the duck pen: ducks run from you; a lone herder gets dodged, two can pinch them in
+function penDuck(d, dt){
+  const P = ST.pen, inside = (x, y) => x > P.x0 + 8 && x < P.x1 - 6 && y > P.y0 + 10 && y < P.y1 - 6;
+  if (!d.penned && inside(d.x, d.y)) {
+    d.penned = true; if (d.target) { d.target.claimed = false; d.target = null; }
+    let near = null, nd = 1e9; for (const p of G.players) { const k = dist(p, d); if (k < nd) { nd = k; near = p; } }
+    if (near) near.st.penned++;
+    bankFrom(d.x, d.y - 20, PEN_BONUS, 5); addText(d.x, d.y - 40, `penned! +${PEN_BONUS}`, '#ffe7a0', 22);
+    sfxQuack(); [0, 4, 7, 12].forEach((s, i) => tone(659*2**(s/12), .12, 'triangle', .08, null, .1 + i*.06));
+    G.rings.push({x:d.x, y:d.y, r0:10, r1:60, life:0, max:.45, col:'#fff3a8', w:5}); feverAdd(15);
+    if (G.ducks.every(q => q.penned)) { addText(W/2, H/2, 'All the ducks are in!', '#ffe7a0', 40); confettiRain(80); }
+  }
+  if (!d.penned) return false;
+  d.retarget -= dt;
+  if (d.retarget <= 0) { d.retarget = rand(1.5, 3); d.tx = rand(P.x0 + 20, P.x1 - 16); d.ty = rand(P.y0 + 22, P.y1 - 14); }
+  const ax = d.tx - d.x, ay = d.ty - d.y, a = Math.hypot(ax, ay), k = 1 - Math.exp(-dt*6);
+  d.vx += ((a > 6 ? ax/a*30 : 0) - d.vx)*k; d.vy += ((a > 6 ? ay/a*30 : 0) - d.vy)*k;
+  d.x = clamp(d.x + d.vx*dt, P.x0 + 12, P.x1 - 10); d.y = clamp(d.y + d.vy*dt, P.y0 + 14, P.y1 - 8);
+  if (Math.abs(d.vx) > 6) d.face = d.vx > 0 ? 1 : -1;
+  d.waddle += Math.hypot(d.vx, d.vy)*dt*.25;
+  return true;
+}
+function penFlee(d, dt){
+  let fx = 0, fy = 0, n = 0;
+  for (const p of G.players) {
+    const dx = d.x - p.x, dy = d.y - p.y, dd = Math.hypot(dx, dy);
+    if (dd < 110 && dd > 0) { const w = (110 - dd)/110; fx += dx/dd*w; fy += dy/dd*w; n++; }
+  }
+  if (!n) return null;
+  const m = Math.hypot(fx, fy) || 1; fx /= m; fy /= m;
+  if (n === 1) {   // one herder alone: the duck dodges off to the side
+    d.dodgeT = (d.dodgeT || 0) - dt;
+    if (d.dodgeT <= 0) { d.dodgeT = rand(.6, 1.4); d.dodge = Math.random() < .5 ? -1 : 1; }
+    const px = -fy*d.dodge, py = fx*d.dodge; fx = fx*.55 + px*.85; fy = fy*.55 + py*.85;
+    const k = Math.hypot(fx, fy) || 1; fx /= k; fy /= k;
+  }
+  return [fx, fy];
+}
+// sparrows: a flock swoops onto the rice and eats it until someone scares it off
+function updateFlocks(dt){
+  if (G.state === 'play') {
+    G.flockT -= dt;
+    if (G.flockT <= 0 && G.flocks.filter(f => f.state !== 'out').length < 2 && tallCount > 30) {
+      G.flockT = rand(...FLOCK_EVERY)/(1 + .3*Math.max(0, G.players.length - 2));
+      spawnFlock();
+    }
+  }
+  for (const f of G.flocks) {
+    f.t += dt;
+    if (f.state === 'in') {
+      const dx = f.tx - f.x, dy = f.ty - f.y, d = Math.hypot(dx, dy), st = Math.min(d, 300*dt);
+      f.x += dx/(d || 1)*st; f.y += dy/(d || 1)*st; f.alt = Math.max(0, f.alt - 160*dt);
+      if (d < 4 && f.alt <= 0) { f.state = 'eat'; f.t = 0; }
+    } else if (f.state === 'eat') {
+      f.eatT += dt;
+      if (f.eatT >= FLOCK_EAT) {
+        f.eatT = 0;
+        let got = false;
+        eachCell(f.x, f.y, 46, i => { if (TALL[i] && Math.random() < .4) { eatTuft(i); got = true; return true; } });
+        if (!got) {   // hop over to the nearest rice still standing
+          let bi = -1, bd = 160*160;
+          eachCell(f.x, f.y, 160, i => { if (TALL[i]) { const d = (TX[i] - f.x)**2 + (TY[i] - f.y)**2; if (d < bd) { bd = d; bi = i; } } });
+          if (bi >= 0) { f.x += (TX[bi] - f.x)*.5; f.y += (TY[bi] - f.y)*.5; } else f.state = 'out';
+        }
+      }
+      if (f.t > FLOCK_STAY) f.state = 'out';
+      if (Math.random() < dt*2) tone(rand(2600, 3400), .04, 'sine', .02, rand(3000, 3800));
+    } else { f.x += f.vx*dt; f.alt += 260*dt; if (f.alt > 500) f.dead = true; }
+  }
+  G.flocks = G.flocks.filter(f => !f.dead);
+}
+function spawnFlock(){
+  let i = -1;
+  for (let k=0; k<60; k++) { const j = (Math.random()*N)|0; if (TALL[j]) { i = j; break; } }
+  if (i < 0) return;
+  const from = Math.random() < .5 ? -1 : 1;
+  G.flocks.push({x:from < 0 ? -40 : W + 40, y:TY[i] - 60, tx:TX[i], ty:TY[i], alt:180, state:'in', t:0, eatT:0, vx:from*-1*260,
+                 birds:Array.from({length:9}, () => ({ox:rand(-38, 38), oy:rand(-20, 20), ph:rand(0, 6)}))});
+  addText(TX[i], TY[i] - 70, 'sparrows!', '#fff', 18);
+  for (let k=0; k<4; k++) tone(rand(2800, 3600), .05, 'sine', .04, rand(3400, 4200), k*.07);
+}
+function eatTuft(i){
+  TALL[i] = 0; tallCount--; stampStubble(TX[i], TY[i]); G.lostBirds += GOLD[i] ? GOLD_VALUE : 1;
+  for (let k=0; k<3 && G.parts.length < 420; k++)
+    G.parts.push({x:TX[i], y:TY[i], z:rand(10, 30), vx:rand(-50, 50), vy:rand(-30, 30), vz:rand(40, 120), life:0, max:.5, c:'#c4a447'});
+}
+function scareBirds(x, y, r, p){
+  for (const f of G.flocks) {
+    if (f.state === 'out' || Math.hypot(f.x - x, f.y - y) > r) continue;
+    f.state = 'out'; f.vx = (f.x < x ? -1 : 1)*300;
+    if (p) p.st.birds++;
+    addText(f.x, f.y - 50, 'shoo!', '#fff', 22);
+    for (let k=0; k<14 && G.parts.length < 420; k++)
+      G.parts.push({x:f.x + rand(-30, 30), y:f.y + rand(-15, 15), z:rand(10, 40), vx:rand(-140, 140), vy:rand(-80, 80), vz:rand(100, 260), life:0, max:rand(.5, .9), c:k%2 ? '#8a6a48' : '#e9dcc4'});
+    for (let k=0; k<6; k++) noise(.05, 2400, 1200, .05, 2, k*.03);
+    feverAdd(10);
+  }
+}
+// planting season: tap to plant a seedling where you stand; on the drum beat = Perfect;
+// next to your last one along the row = a row streak
+function plantPress(p){
+  if (p.seeds <= 0) { addText(p.x, p.y - 64, 'get seedlings!', '#ffd2c8', 15); tone(200, .08, 'triangle', .05); return; }
+  const tx = p.x + p.fx*8, ty = p.y + p.fy*6;
+  let best = null, bd = 30;
+  for (const c of PLANT) if (!c.s) { const d = Math.hypot(c.x - tx, c.y - ty); if (d < bd) { bd = d; best = c; } }
+  if (!best) { tone(240, .04, 'triangle', .04); return; }
+  const off = beatOff(), q = off < PERFECT_W ? 3 : off < GOOD_W ? 2 : 1;
+  const last = p.lastPlant, row = last && last.r === best.r && Math.abs(last.c - best.c) === 1;
+  p.rowStreak = row ? p.rowStreak + 1 : 0;
+  const v = (q + (p.rowStreak >= 3 ? 1 : 0))*feverX();
+  Object.assign(best, {s:1, q, t:G.t, tilt:q === 1 ? rand(-.5, .5) : rand(-.08, .08), by:p});
+  p.seeds--; p.lastPlant = best; p.score += v; p.st.planted++; p.squash = .25;
+  bankFrom(best.x, best.y - 10, v);
+  if (q === 3) {
+    p.st.perfects++; feverAdd(9);
+    G.rings.push({x:best.x, y:best.y, r0:6, r1:34, life:0, max:.35, col:'#ffe066', w:4});
+    addText(best.x, best.y - 46, p.rowStreak >= 3 ? `Perfect! row x${p.rowStreak + 1}` : 'Perfect!', '#ffe066', 18);
+    tone(659*2**(Math.min(p.rowStreak, 12)/12), .12, 'triangle', .09); rumble(p, 50, .2, .3);
+  } else if (q === 2) { addText(best.x, best.y - 40, 'good', '#fff', 14); tone(523, .07, 'triangle', .06); }
+  else { addText(best.x, best.y - 40, 'wobbly', '#ffd2c8', 14); tone(300, .06, 'triangle', .05); }
+  for (let k=0; k<5 && G.parts.length < 420; k++)
+    G.parts.push({dust:true, x:best.x + rand(-5, 5), y:best.y, z:2, vx:rand(-50, 50), vy:rand(-20, 20), vz:rand(30, 70), life:0, max:.35, c:'#cfe6f2'});
+  if (G.state === 'play' && PLANT.every(c => c.s)) endRound(true);
+}
+// the one button does something else at a station: pedal, crank, reins, planting
+function contextPress(p){
+  if (!COOP) return false;
+  if (F.plant) { plantPress(p); return true; }
+  if (ST.thresher && dist(p, ST.thresher.ped) < 26) { pedal(p); return true; }
+  if (ST.cart && takeReins(p)) return true;
+  if (ST.pulley && dist(p, ST.pulley.crank) < 30) { crank(p); return true; }
+  return false;
+}
+function updateDays(dt){
+  if (!COOP) return;
+  if (F.carry) handoffs();
+  if (ST.barn) updateBarn();
+  if (ST.thresher) updateThresher(dt);
+  if (ST.cart) updateCart(dt);
+  if (ST.pulley) updatePulley(dt);
+  if (F.sparrows) updateFlocks(dt);
+  if (ST.tray) for (const p of G.players) if (p.seeds < SEEDS && dist(p, ST.tray) < 48) {
+    p.seeds = SEEDS; addText(p.x, p.y - 70, 'seedlings!', '#d6ffb8', 16); tone(988, .06, 'triangle', .07); tone(1318, .08, 'triangle', .06, null, .05);
+  }
+  // the drum: while planting, or while someone stands on the thresher pedal
+  if (F.plant || (ST.thresher && ST.thresher.by)) {
+    const b = Math.floor(G.t/BEAT);
+    if (b !== G.lastDrum) { G.lastDrum = b; sfxDrum(b % 4 === 0); }
+  }
+  for (const t of G.tosses) t.t += dt;
+  G.tosses = G.tosses.filter(t => t.t < t.dur);
 }
 // terraces: a wall stops you from below (find the stairs); from above you stop at the lip,
 // or push the stick down to hop off it
@@ -459,9 +908,11 @@ function updatePlayer(p, dt, canAct){
   p.pingT = Math.max(0, p.pingT - dt); p.ropeDrag = Math.max(0, p.ropeDrag - dt);
   if (p.ping && !p.pingPrev && p.connected) doPing(p);
   p.pingPrev = p.ping;
+  p.pedCD = Math.max(0, p.pedCD - dt); p.handCD = Math.max(0, p.handCD - dt); p.fullT = Math.max(0, p.fullT - dt);
   if (canAct && p.dizzy <= 0 && !p.vault) {
     if (pressed) {
-      if (p.hasSickle) { if (p.cd <= 0) slash(p); else p.buffer = .2; p.holding = true; p.holdT = 0; p.charging = false; }
+      if (contextPress(p)) {}   // pedal, crank, reins or planting took the press
+      else if (p.hasSickle) { if (p.cd <= 0) slash(p); else p.buffer = .2; p.holding = true; p.holdT = 0; p.charging = false; }
       else recall(p);
     }
     // input buffer: a tap made during the cooldown fires as soon as it ends (snappy, never eaten)
@@ -487,6 +938,8 @@ function updatePlayer(p, dt, canAct){
   let sp = p.inRice ? SPEED_RICE : SPEED_OPEN;
   if (p.onStair) sp *= STAIR_SLOW;
   if (p.ropeDrag > 0) sp *= ROPE_DRAG;   // the rope drags through the rice it's cutting
+  if (p.loadN) sp *= 1 - CARRY_SLOW*p.loadN;   // a heavy load slows you down
+  if (ST.cart && ST.cart.driver === p) sp = Math.min(sp, CART_SPEED*1.15);   // walking the buffalo
   if (p.charging) sp *= CHARGE_SLOW;
   if (p.dizzy > 0) sp *= .35;
   // momentum: accelerate hard, slide a little when you let go, skid when you reverse
@@ -510,7 +963,7 @@ function updatePlayer(p, dt, canAct){
   const nt = tierAt(p.x, p.y);
   if (nt < p.tier) p.st.climbs++;
   p.tier = nt;
-  if (COOP && WALLS.length && canAct) tryBoost(p, dt);
+  if (F.boost && WALLS.length && canAct) tryBoost(p, dt);
   p.st.dist += Math.hypot(p.vx, p.vy)*dt;
   if (p.z > 0 || p.vz) { p.vz -= GRAV_Z*dt; p.z += p.vz*dt; if (p.z <= 0) { p.z = p.vz = 0; land(p); } }
   const spd = Math.hypot(p.vx, p.vy), moving = spd > 40;
@@ -546,10 +999,12 @@ function slash(p){
   p.st.cut += n;
   helpUp(p, p.x, p.y, 90);
   scareDucks(p.x, p.y, 100, p);
+  if (F.sparrows) scareBirds(p.x, p.y, 130, p);
 }
 // Y (E / slash on the keys): a "!" over your head and a ring on the ground
 function doPing(p){
   p.pingT = 1.1; p.st.pings++;
+  if (F.sparrows) scareBirds(p.x, p.y, 170, p);
   G.rings.push({x:p.x, y:p.y, r0:8, r1:52, life:0, max:.5, col:p.col.c, w:5});
   const f = 880*[1, 1.122, 1.26, 1.498][p.slot];
   tone(f, .07, 'square', .045); tone(f*1.5, .09, 'square', .04, null, .07);
@@ -615,6 +1070,7 @@ function updateBoom(b, dt){
     }
   }
   scareDucks(b.x, b.y, 60, b.owner);
+  if (F.sparrows) scareBirds(b.x, b.y, 90, b.owner);
 }
 
 // ---- sheaves, ducks, particles --------------------------------------------
@@ -632,6 +1088,7 @@ function updateSheaves(dt){
     let best = null, bd = MAGNET_R;
     for (const p of G.players) {
       if (p.tier !== s.tier && !p.onStair) continue;   // not through a wall
+      if (F.carry && p.loadN >= CARRY_MAX) { if (p.fullT <= 0 && Math.hypot(p.x - s.x, p.y - s.y) < PICK_R) { p.fullT = 1.5; addText(p.x, p.y - 80, 'full! drop it off', '#ffd2c8', 15); } continue; }
       const d = Math.hypot(p.x - s.x, p.y - s.y); if (d < bd) { bd = d; best = p; }
     }
     if (!best) continue;
@@ -653,16 +1110,19 @@ function sheafTerrain(s){
 }
 function collect(p, s){
   s.dead = true;
-  const v = s.gold ? GOLD_VALUE : 1;
-  p.score += v; G.team += v; p.combo++; p.comboT = .5; p.squash = Math.max(p.squash, .08);
+  const v = (s.gold ? GOLD_VALUE : 1)*feverX();
+  if (F.carry) { p.load += v; p.loadN++; }   // onto your back: it counts when you drop it at a station
+  else { p.score += v; bankFrom(p.x, p.y - 30, v); }
+  p.combo++; p.comboT = .5; p.squash = Math.max(p.squash, .08);
   p.st.picked++; if (s.gold) p.st.gold++;
+  feverAdd(s.gold ? 6 : FEVER_FILL);
   sfxPick(p.combo, s.gold);
-  if (s.gold) { addText(p.x, p.y-60, `+${GOLD_VALUE}`, '#ffe066', 26); rumble(p, 80, .2, .4); }
+  if (s.gold) { addText(p.x, p.y-60, `+${v}`, '#ffe066', 26); rumble(p, 80, .2, .4); }
 }
 function newDuck(i, n){
   // on the terraces each duck keeps to its own tier (spread from the top tier to the bottom one)
   const T = WALLS.length, tier = T ? Math.round(i*T/Math.max(1, n-1)) : 0;
-  const x = rand(PADDY.x0+60, PADDY.x1-60), [lo, hi] = duckBounds(tier, x);
+  const x = rand(PADDY.x0+60, (ST.pen ? ST.pen.x0 - 80 : PADDY.x1-60)), [lo, hi] = duckBounds(tier, x);
   return {duck:true, tier, x, y:T ? rand(lo, hi) : rand(PADDY.y0+60, PADDY.y1-40), tx:x, ty:0,
           vx:0, vy:0, retarget:0, target:null, eat:0, face:1, waddle:Math.random()*6, quackT:rand(1,4)};
 }
@@ -672,10 +1132,15 @@ function scareDucks(x, y, r, p){
 }
 function updateDuck(d, dt){
   d.retarget -= dt; d.quackT -= dt; d.scare = Math.max(0, (d.scare||0) - dt);
+  if (ST.pen && penDuck(d, dt)) return;
   let near = null, nd = 1e9;
   for (const p of G.players) { const dd = Math.hypot(p.x-d.x, p.y-d.y); if (dd < nd) { nd = dd; near = p; } }
   let mvx = 0, mvy = 0, sp = 0; d.eating = false;
-  if (nd < 70 || d.scare > 0) {
+  const pf = ST.pen ? penFlee(d, dt) : null;
+  if (pf) {
+    [mvx, mvy] = pf; sp = 185; if (d.target) { d.target.claimed = false; d.target = null; } d.eat = 0;
+    if (d.quackT <= 0) { sfxQuack(); d.quackT = rand(1.2, 3); addText(d.x, d.y-30, 'quack', '#fff', 15); }
+  } else if (nd < 70 || d.scare > 0) {
     const fx = d.scare > 0 ? d.sx : near.x, fy = d.scare > 0 ? d.sy : near.y;
     const ax = d.x - fx, ay = d.y - fy, a = Math.hypot(ax, ay) || 1;
     mvx = ax/a; mvy = ay/a; sp = 175; if (d.target) { d.target.claimed = false; d.target = null; } d.eat = 0;
@@ -722,6 +1187,7 @@ function botThink(p, dt){
     if (a.hold <= 0) { a.b = false; a.mode = 'walk'; a.throwCD = rand(3, 6); }
     return;
   }
+  if (botRole(p, a, dt)) return botMove(p, a, dt, true);
   if (a.think <= 0) {
     a.think = rand(.25, .45);
     let best = null, bd = 280*280;
@@ -751,6 +1217,10 @@ function botThink(p, dt){
         a.tx = tx; a.ty = clamp(ty, lo + 8, hi - 8);
       }
     }
+    // carry days: full (or nothing left to grab nearby, or sunset coming) = take it to the nearest drop-off
+    if (F.carry && p.loadN && (p.loadN >= CARRY_MAX - 1 || (!best && p.loadN >= 5) || (G.state === 'play' && roundLen() - G.clock < 12) || tallCount === 0)) {
+      const d = bestDrop(p); if (d) { a.tx = d.x; a.ty = d.y; return botMove(p, a, dt, false); }
+    }
     if (p.hasSickle && a.throwCD <= 0) {
       let dir = null, bestN = 0;
       for (let k=0; k<8; k++) {
@@ -762,14 +1232,119 @@ function botThink(p, dt){
       a.throwCD = 1.5;
     }
   }
+  botMove(p, a, dt, false);
+}
+function botMove(p, a, dt, role){
   const [wx, wy] = botWaypoint(p, a.tx, a.ty);
   const dx = wx - p.x, dy = wy - p.y, d = Math.hypot(dx, dy);
   if (d > 6) { a.mx = dx/d; a.my = dy/d; } else { a.mx = a.my = 0; }
   // stuck on a wall or a corner: wander somewhere else on this tier for a moment
   const moved = Math.hypot(p.x - (a.lx ?? p.x), p.y - (a.ly ?? p.y)); a.lx = p.x; a.ly = p.y;
   a.stuck = d > 20 && moved < 30*dt ? (a.stuck || 0) + dt : 0;
-  if (a.stuck > .7) { a.stuck = 0; a.tx = clamp(p.x + rand(-300, 300), PADDY.x0+20, PADDY.x1-20); const [lo, hi] = tierBounds(p.tier, a.tx); a.ty = rand(lo, hi); a.think = 1.2; }
-  a.b = p.hasSickle && p.cd <= 0 && !p.prev && tallNear(p.x + p.fx*10, p.y + p.fy*8, SLASH_R - 14, p.onStair ? -1 : p.tier);
+  if (a.stuck > .7 && !role) { a.stuck = 0; a.tx = clamp(p.x + rand(-300, 300), PADDY.x0+20, PADDY.x1-20); const [lo, hi] = tierBounds(p.tier, a.tx); a.ty = rand(lo, hi); a.think = 1.2; }
+  if (role) return;
+  a.b = p.hasSickle && p.cd <= 0 && !p.prev && !nearStation(p) && tallNear(p.x + p.fx*10, p.y + p.fy*8, SLASH_R - 14, p.onStair ? -1 : p.tier);
+}
+// a CPU's swing must not grab the reins or work a pedal by accident
+const nearStation = p => (ST.cart && dist(p, cartHead(ST.cart)) < 46) || (ST.thresher && dist(p, ST.thresher.ped) < 30) || (ST.pulley && dist(p, ST.pulley.crank) < 34);
+// CPUs hit the beat with a little error, re-rolled after each press
+function onBeat(a){
+  if (a.err === undefined) a.err = rand(-.13, .13);
+  const ph = G.t/BEAT, off = (ph - Math.round(ph))*BEAT;
+  if (Math.abs(off - a.err) < .02) { a.err = rand(-.13, .13); return true; }
+  return false;
+}
+function nearestBot(pt, ok = () => true){
+  let best = null, bd = 1e9;
+  for (const q of G.players) if (q.input.type === 'bot' && ok(q)) { const d = Math.hypot(q.x - pt.x, q.y - pt.y) + (q.tier !== tierAt(pt.x, pt.y) ? 250 : 0); if (d < bd) { bd = d; best = q; } }
+  return best;
+}
+function bestDrop(p){
+  const c = [];
+  if (ST.thresher) c.push(ST.thresher.hop);
+  if (ST.barn) c.push(ST.barn);
+  if (ST.cart && !ST.cart.driver && ST.cart.loadN < CART_MAX) c.push(cartBack(ST.cart));
+  if (ST.pulley && ST.pulley.state === 'down' && ST.pulley.loadN < PULLEY_MAX) c.push({x:ST.pulley.x, y:ST.pulley.yBot});
+  let best = null, bd = 1e9;
+  for (const s of c) { const d = Math.hypot(s.x - p.x, s.y - p.y) + Math.abs(tierAt(s.x, s.y) - p.tier)*180; if (d < bd) { bd = d; best = s; } }
+  return best;
+}
+// special jobs for CPUs on the co-op days (returns true when it has one this frame)
+function botRole(p, a, dt){
+  if (!COOP) return false;
+  if (F.plant) { botPlant(p, a); return true; }
+  const T = ST.thresher, c = ST.cart, P = ST.pulley;
+  if (T && (T.by === p || (T.qN >= 10 && !T.by && nearestBot(T.ped, q => q.loadN < 5) === p))) {
+    if (T.by === p && !T.qN) return false;   // hopper empty: back to work
+    a.tx = T.ped.x; a.ty = T.ped.y;
+    a.b = T.by === p && onBeat(a) && !p.prev;
+    return true;
+  }
+  if (c) {
+    const home = Math.hypot(c.x - ST.barn.x, c.y - ST.barn.y) < 220;
+    const goHome = c.loadN >= 24 || (c.loadN > 0 && (tallCount < 60 || roundLen() - G.clock < 18));
+    const goOut = !c.loadN && home && tallCount > 120 && roundLen() - G.clock > 25;
+    if (c.driver === p) {
+      if (c.trip === 'out' && c.goal) {   // lead it out to the rice, then let go so everyone can load it
+        a.tx = c.goal.x; a.ty = c.goal.y;
+        a.b = dist(cartHead(c), c.goal) < 50 && !p.prev; if (a.b) c.trip = null;
+      } else { a.tx = ST.barn.x + 30; a.ty = ST.barn.y; a.b = !c.loadN && !p.prev; }
+      return true;
+    }
+    if (!c.driver && (goHome || goOut) && p.loadN < 3 && nearestBot(cartHead(c)) === p) {
+      const h = cartHead(c); a.tx = h.x; a.ty = h.y;
+      a.b = dist(p, h) < 30 && !p.prev;
+      if (a.b) {
+        c.trip = goOut ? 'out' : 'home';
+        if (goOut) {   // the middle of the rice still standing
+          let sx = 0, sy = 0, n = 0;
+          for (let k=0; k<300; k++) { const i = (Math.random()*N)|0; if (TALL[i]) { sx += TX[i]; sy += TY[i]; n++; } }
+          c.goal = n ? {x:clamp(sx/n, PADDY.x0 + 80, PADDY.x1 - 80), y:clamp(sy/n, PADDY.y0 + 60, PADDY.y1 - 40)} : null;
+        }
+      }
+      return true;
+    }
+  }
+  if (P && P.state === 'up' && p.tier === 0 && p.loadN < 4 && nearestBot(P.crank, q => q.tier === 0) === p) {
+    a.tx = P.crank.x; a.ty = P.crank.y; a.crankT = (a.crankT || 0) - dt;
+    a.b = false; if (dist(p, P.crank) < 22 && a.crankT <= 0 && !p.prev) { a.b = true; a.crankT = .24; }
+    return true;
+  }
+  for (const f of G.flocks) if (f.state === 'eat' && nearestBot(f) === p && Math.hypot(f.x - p.x, f.y - p.y) < 650) {
+    a.tx = f.x; a.ty = f.y; a.b = Math.hypot(f.x - p.x, f.y - p.y) < 100 && p.hasSickle && p.cd <= 0 && !p.prev; return true;
+  }
+  if (ST.pen && p.slot % 2 === 1) {   // herd: get behind a duck, on the far side from the pen, and push
+    const pc = {x:(ST.pen.x0 + ST.pen.x1)/2, y:(ST.pen.y0 + ST.pen.y1)/2};
+    let duck = null, bd = 1e9;
+    for (const d of G.ducks) if (!d.penned) { const k = dist(p, d) + dist(d, pc)*.5; if (k < bd) { bd = k; duck = d; } }
+    if (!duck) return false;
+    const ux = duck.x - pc.x, uy = duck.y - pc.y, m = Math.hypot(ux, uy) || 1;
+    const bx = duck.x + ux/m*60, by = duck.y + uy/m*60;
+    a.pushT = (a.pushT || 0) - dt;
+    if (Math.hypot(p.x - bx, p.y - by) < 30) a.pushT = .7;
+    if (a.pushT > 0) { a.tx = duck.x - ux/m*40; a.ty = duck.y - uy/m*40; }   // walk through the duck toward the pen
+    else { a.tx = bx; a.ty = by; }
+    a.b = false; return true;
+  }
+  return false;
+}
+function botPlant(p, a){
+  a.b = false;
+  if (p.seeds <= 0) { a.tx = ST.tray.x; a.ty = ST.tray.y; return; }
+  let cell = a.cell && !a.cell.s ? a.cell : null;
+  if (!cell) {
+    let bd = 1e9; const last = p.lastPlant;
+    for (const c of PLANT) if (!c.s) {
+      let d = Math.hypot(c.x - p.x, c.y - p.y);
+      if (last && c.r === last.r && Math.abs(c.c - last.c) === 1) d -= 60;   // keep going along the row
+      if (G.players.some(q => q !== p && q.ai && q.ai.cell === c)) d += 400;
+      if (d < bd) { bd = d; cell = c; }
+    }
+    a.cell = cell;
+  }
+  if (!cell) return;
+  a.tx = cell.x; a.ty = cell.y;
+  if (Math.hypot(cell.x - p.x, cell.y - p.y) < 16 && onBeat(a) && !p.prev) a.b = true;
 }
 // terraces: CPUs hop down toward a lower target and walk to the nearest stairs for a higher one
 function botWaypoint(p, tx, ty){
@@ -899,43 +1474,56 @@ function startPressed(){
   if (G.state === 'lobby') { if (!G.players.length) { toast('Press A on a controller to join first'); return; } beginRound(); }
   else if (G.state === 'play') pause(true);
   else if (G.state === 'paused') pause(false);
-  else if (G.state === 'end' && G.endT > 1.2) beginRound();
+  else if (G.state === 'end' && G.endT > END0() + 1.2) beginRound();
 }
 function backPressed(){
   if (G.state === 'lobby') addBot();
-  else if (G.state === 'paused' || (G.state === 'end' && G.endT > 1.2)) toLobby();
+  else if (G.state === 'paused' || (G.state === 'end' && G.endT > END0() + 1.2)) toLobby();
 }
 function addBot(){
   if (G.state !== 'lobby') return;
   if (G.players.length < 4) join({type:'bot'});
   else if (G.players.some(p => p.input.type === 'bot')) { G.players = G.players.filter(p => p.input.type !== 'bot'); toast('CPUs removed'); }
 }
+// LB / RB: the field in a race, the day in co-op
 function switchLevel(d){
   if (G.state !== 'lobby') return;
-  setLevel(levelIdx + d); resetWorld();
-  toast(`Field: ${LV.name}`); tone(660, .06, 'triangle', .07); tone(990, .08, 'triangle', .07, null, .05);
+  if (COOP) {
+    dayIdx = (dayIdx + d + DAYS.length) % DAYS.length;
+    try { localStorage.setItem('harvestCoopDay', dayIdx); } catch(e) {}
+    applyMode(); resetWorld(); toast(`Day ${dayIdx + 1}: ${DAY.name}`);
+  } else { setLevel(levelIdx + d); raceLevel = levelIdx; resetWorld(); toast(`Field: ${LV.name}`); }
+  tone(660, .06, 'triangle', .07); tone(990, .08, 'triangle', .07, null, .05);
 }
 function switchMode(){
   if (G.state !== 'lobby') return;
   COOP = !COOP;
   try { localStorage.setItem('harvestRaceMode', COOP ? 'coop' : 'race'); } catch(e) {}
-  resetWorld();
+  applyMode(); resetWorld();
   toast(COOP ? 'Mode: Co-op (one basket for everyone)' : 'Mode: Race (most rice wins)');
   tone(COOP ? 784 : 660, .06, 'triangle', .07); tone(COOP ? 1175 : 990, .08, 'triangle', .07, null, .05);
 }
 function resetWorld(){
+  buildStations();
   resetField(); G.sheaves = []; G.booms = []; G.parts = []; G.texts = []; G.falls = []; G.hitstop = 0; G.shake = 0;
   G.rings = []; G.team = 0; G.lostDuck = 0; G.lostRain = 0; G.storm = {phase:'none', x:-99, t:0, drip:0};
-  const nd = DUCKS + (COOP ? Math.max(0, G.players.length - 2)*CREW_DUCKS : 0);
+  G.flyers = []; G.tosses = []; G.flocks = []; G.flockT = 6; G.lostBirds = 0; G.starNow = 0; G.starFx = null;
+  G.fever = G.feverCD = G.feverM = 0;
+  const nd = dayDucks();
   G.ducks = Array.from({length:nd}, (_, i) => newDuck(i, nd));
   placePlayers();
 }
 function beginRound(){
-  resetWorld(); G.state = 'count'; G.countT = 0; G.clock = 0; G.cleared = false; G.lastBeep = -1;
   G.roundPlayers = G.players.length;
+  resetWorld(); G.state = 'count'; G.countT = 0; G.clock = 0; G.cleared = false; G.lastBeep = -1; G.confetti = [];
 }
-// co-op targets: a share of all the rice in the field (a lower bar when you play alone)
-function starT(){ const n = G.roundPlayers; return (n >= 3 ? STARS_CREW : n === 2 ? STARS_DUO : STARS_SOLO).map(f => Math.round(G.maxValue*f)); }
+// co-op targets: a share of all the rice in the field (a lower bar when you play alone; each day sets its own)
+function starT(){
+  const n = G.roundPlayers, base = DAY.stars || STARS_DUO;
+  const f = !DAY.stars ? (n >= 3 ? STARS_CREW : n === 2 ? STARS_DUO : STARS_SOLO)
+          : base.map(v => n >= 3 ? Math.min(.97, v*1.08) : n === 2 ? v : v*.65);
+  return f.map(v => Math.max(1, Math.round(G.maxValue*v)));
+}
 // the storm: a warning, then a band of rain sweeps across and soaks any sheaf left lying in it
 // a bigger crew clears the field sooner, so their storm comes sooner too
 const stormAt = () => STORM_AT - Math.max(0, G.roundPlayers - 2)*8;
@@ -963,7 +1551,7 @@ function updateStorm(dt){
 // how dark the storm makes things (0..1)
 function stormDark(){
   const st = G.storm;
-  if (!COOP) return 0;
+  if (!COOP || !F.storm) return 0;
   if (st.phase === 'warn') return clamp((G.clock - (stormAt() - 5))/5, 0, 1);
   if (st.phase === 'rain') return clamp((W + STORM_W - st.x)/STORM_W, 0, 1);
   return 0;
@@ -983,6 +1571,14 @@ const AWARDS = [
   {t:'Lawn Mower',     k:'cut',    fun:1,   d:n => `${n} stalks cut`},
   {t:'Top Picker',     k:'picked', fun:1,   d:n => `${n} sheaves grabbed`},
   {t:'Marathon',       k:'dist',   fun:.5,  d:n => `ran ${n} m`, fmt:v => Math.round(v/40)},
+  {t:'Scarecrow',      k:'birds',  fun:3,   d:n => `shooed ${pl(n, 'flock')}`},
+  {t:'Duck Herder',    k:'penned', fun:3,   d:n => `penned ${pl(n, 'duck')}`},
+  {t:'Pack Mule',      k:'delivered', fun:1.5, d:n => `delivered ${n} rice`, min:10},
+  {t:'Team Player',    k:'handoffs', fun:2.5, d:n => pl(n, 'hand-off')},
+  {t:'Rhythm Master',  k:'perfects', fun:2.5, d:n => pl(n, 'Perfect'), min:3},
+  {t:'Green Thumb',    k:'planted', fun:1.5, d:n => `planted ${n} seedlings`},
+  {t:'Buffalo Whisperer', k:'drove', fun:3, d:n => `led the buffalo ${n} m`, fmt:v => Math.round(v/40), min:40},
+  {t:'Muscles',        k:'cranks', fun:2.5, d:n => `cranked ${pl(n, 'time')}`, min:4},
 ];
 function pickAwards(){
   const ps = G.players; if (!ps.length) return [];
@@ -1024,11 +1620,19 @@ function endRound(cleared){
   G.booms = [];
   G.awards = pickAwards(); G.endSfx = new Set();
   if (COOP) {
+    // sheaves still flying to the basket count, and so does whatever is already in the thresher's hopper
+    for (const f of G.flyers) G.team += f.v;
+    G.flyers = [];
+    if (ST.thresher) { G.team += ST.thresher.qV; ST.thresher.qN = ST.thresher.qV = 0; }
+    G.fever = 0; G.team = Math.round(G.team);
     const t = starT(); G.starsGot = t.filter(v => G.team >= v).length;
     for (const p of G.players) rumble(p, 300 + G.starsGot*120, .5, .5);
-    const key = 'harvestRaceCoop_' + LV.id;
+    const key = 'harvestRaceCoop_' + DAY.id;
     try { G.coopBest = +localStorage.getItem(key) || 0; } catch(e) {}
     if (G.team > G.coopBest) { G.coopBest = G.team; G.newBest = true; try { localStorage.setItem(key, G.team); } catch(e) {} } else G.newBest = false;
+    G.newStars = G.starsGot > (DAY_STARS[DAY.id] || 0);
+    if (G.newStars) { DAY_STARS[DAY.id] = G.starsGot; try { localStorage.setItem('harvestCoopStars', JSON.stringify(DAY_STARS)); } catch(e) {} }
+    if (G.starsGot === 3 || cleared) confettiRain(G.starsGot === 3 ? 140 : 60);
   } else {
     const top = Math.max(...G.players.map(p => p.score));
     for (const p of G.players) if (p.score === top) rumble(p, 400, .5, .5);
@@ -1065,8 +1669,11 @@ function update(dt){
   ropes();
   for (const b of G.booms) updateBoom(b, dt);
   G.booms = G.booms.filter(b => !b.dead);
-  if (COOP && G.state === 'play') updateStorm(dt);
+  if (F.storm && G.state === 'play') updateStorm(dt);
+  updateDays(dt);
   updateSheaves(dt);
+  updateFlyers(dt); updateFever(dt); updateConfetti(dt);
+  if (G.starFx) { G.starFx.t += dt; if (G.starFx.t > 1.6) G.starFx = null; }
   for (const r of G.rings) r.life += dt;
   G.rings = G.rings.filter(r => r.life < r.max);
   for (const d of G.ducks) updateDuck(d, dt);
@@ -1081,7 +1688,8 @@ function update(dt){
   else { g.x += 420*dt; if (g.x > W+160) { g.on = false; g.next = rand(5, 11); } }
 
   if (G.state === 'lobby') {
-    if (tallCount < TOTAL*.45 && !G.booms.length) { resetField(); G.sheaves = []; toast('The rice grew back'); }
+    if (!F.plant && tallCount < TOTAL*.45 && !G.booms.length) { resetField(); G.sheaves = []; toast('The rice grew back'); }
+    if (F.plant && PLANT.filter(c => c.s).length > PLANT.length*.5) { resetField(); toast('Fresh mud'); }
   } else if (G.state === 'count') {
     G.countT += dt;
     const n = Math.floor(G.countT/(COUNT/3));
@@ -1089,20 +1697,25 @@ function update(dt){
     if (G.countT >= COUNT) { G.state = 'play'; G.goT = 0; tone(990, .35, 'triangle', .16); tone(1320, .35, 'sine', .08, null, .05); }
   } else if (G.state === 'play') {
     G.clock += dt; G.goT += dt;
-    const left = Math.ceil(ROUND - G.clock);
+    const left = Math.ceil(roundLen() - G.clock);
     if (left <= 5 && left !== G.lastBeep && left > 0) { G.lastBeep = left; tone(880, .1, 'triangle', .12); }
-    if (G.clock >= ROUND) endRound(false);
-    else if (tallCount === 0 && !G.sheaves.length && !G.booms.length) endRound(true);
+    if (G.clock >= roundLen()) endRound(false);
+    else if (!F.plant && tallCount === 0 && !G.sheaves.length && !G.booms.length && !stillCarrying()) endRound(true);
   } else if (G.state === 'end') {
     G.endT += dt;
-    // the stars pop in one by one, then the awards
-    if (COOP) for (let i=0; i<G.starsGot; i++) if (!G.endSfx.has('s'+i) && G.endT > .9 + i*.45) {
+    // planting: watch the field grow first. Then the stars pop in one by one, then the awards
+    if (F.plant && !G.endSfx.has('grow') && G.endT > .3) { G.endSfx.add('grow'); [0, 2, 4, 7, 9, 12, 14, 16].forEach((s, i) => tone(392*2**(s/12), .3, 'sine', .06, null, i*.2)); }
+    if (COOP) for (let i=0; i<G.starsGot; i++) if (!G.endSfx.has('s'+i) && G.endT > END0() + .9 + i*.45) {
       G.endSfx.add('s'+i); tone(784*2**(i*4/12), .3, 'triangle', .13); tone(1568*2**(i*4/12), .25, 'sine', .05, null, .03);
     }
     G.awards.forEach((a, i) => { if (!G.endSfx.has('a'+i) && G.endT > awardAt(i)) { G.endSfx.add('a'+i); tone(1175, .08, 'triangle', .07); tone(1568, .1, 'triangle', .05, null, .06); rumble(a.p, 80, .2, .3); } });
   }
 }
-const awardAt = i => (COOP ? 2.4 : 1.3) + i*.45;
+const awardAt = i => END0() + (COOP ? 2.4 : 1.3) + i*.45;
+const END0 = () => COOP && F.plant ? 2.2 : 0;   // planting: time for the grow-up before the panel
+// carry days: the field isn't done while rice is still on someone's back or in a station
+const stillCarrying = () => G.players.some(p => p.loadN) || G.flyers.length || (ST.thresher && ST.thresher.qN) ||
+  (ST.cart && ST.cart.loadN) || (ST.pulley && ST.pulley.loadN);
 
 // ---- drawing ---------------------------------------------------------------------
 let DPR = 1, S = 1, SC = 1, OX = 0, OY = 0, OX0 = 0, OY0 = 0;   // OX/OY include the screen shake; OX0/OY0 don't
@@ -1125,7 +1738,7 @@ function skyAt(f, k){
   for (let i=1; i<SKY.length; i++) if (f <= SKY[i][0]) { const a = SKY[i-1], b = SKY[i], t = (f-a[0])/(b[0]-a[0]); return mix(a[k], b[k], t); }
   return SKY[SKY.length-1][k];
 }
-function dayFrac(){ return G.state === 'lobby' || G.state === 'count' ? .2 : clamp(G.clock/ROUND, 0, 1); }
+function dayFrac(){ return G.state === 'lobby' || G.state === 'count' ? .2 : clamp(G.clock/roundLen(), 0, 1); }
 function drawSky(f){
   base();
   const gr = ctx.createLinearGradient(0, 0, 0, SKY_H);
@@ -1202,7 +1815,7 @@ function drawPlayer(p){
   ctx.beginPath(); ctx.moveTo(-side*12, -31); ctx.quadraticCurveTo(-side*20, -33+fl, -side*24, -28+fl); ctx.stroke();
   drawRiceBody(p.col, p.fx*3, p.fy*2, p.dizzy > 0, p.catchT > 0 || (p.comboT > 0 && p.combo > 4));
   ctx.restore();
-  if (p.hasSickle) {
+  if (p.hasSickle && !F.plant) {
     if (p.charging) drawSickle(side*8, -40 - ch*4 - bob, -side*.6 + Math.sin(G.t*40)*.15*ch, 1.1);
     else if (p.slashT > 0) {
       // blade sweeps around the body: swing 0 one way, swing 1 back, swing 2 a full turn
@@ -1281,6 +1894,212 @@ function drawRings(){
     const k = r.life/r.max, rad = r.r0 + (r.r1 - r.r0)*(1 - (1 - k)**2);
     ctx.globalAlpha = 1 - k; ctx.strokeStyle = r.col; ctx.lineWidth = r.w || 4;
     ctx.beginPath(); ctx.ellipse(r.x, r.y, rad, rad*.62, 0, 0, 7); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+// ---- co-op day drawing -------------------------------------------------------------------
+function padRing(x, y, r, col, label){
+  ctx.fillStyle = 'rgba(70,50,25,.25)'; ctx.beginPath(); ctx.ellipse(x, y, r, r*.55, 0, 0, 7); ctx.fill();
+  ctx.setLineDash([6, 6]); ctx.lineDashOffset = -G.t*12; ctx.strokeStyle = col; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.ellipse(x, y, r, r*.55, 0, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+  if (label) txt(label, x, y + r*.55 + 12, 12, '#fff', 'center', 3, 800);
+}
+// a beat ring that closes in on the beat (thresher pedal, planting)
+function beatRing(x, y, big){
+  const u = (G.t/BEAT) % 1, r = (big ? 18 : 14) + 40*(1 - u), hit = u < .12;
+  ctx.strokeStyle = hit ? 'rgba(255,230,100,.95)' : `rgba(255,255,255,${.25 + .5*u})`; ctx.lineWidth = hit ? 4 : 2.5;
+  ctx.beginPath(); ctx.ellipse(x, y, r, r*.55, 0, 0, 7); ctx.stroke();
+}
+function drawPads(){
+  base();
+  const T = ST.thresher;
+  if (T) {
+    padRing(T.hop.x, T.hop.y, 30, '#ffe7a0', 'hopper');
+    ctx.fillStyle = '#8a6a44'; rr(ctx, T.ped.x - 22, T.ped.y - 10, 44, 20, 5); ctx.fill();
+    ctx.fillStyle = T.pedT > 0 ? '#c9a46c' : '#b08c5c'; rr(ctx, T.ped.x - 18, T.ped.y - 8 + (T.pedT > 0 ? 3 : 0), 36, 13, 4); ctx.fill();
+    txt('pedal', T.ped.x, T.ped.y + 22, 12, '#fff', 'center', 3, 800);
+    if (T.qN) beatRing(T.ped.x, T.ped.y, true);
+  }
+  if (ST.barn) padRing(ST.barn.x, ST.barn.y + 30, 34, '#ffe7a0', null);
+  const P = ST.pulley;
+  if (P) {
+    padRing(P.x, P.yBot, 30, '#ffe7a0', P.state === 'down' ? `load ${P.loadN}/${PULLEY_MAX}` : 'pulley');
+    padRing(P.crank.x, P.crank.y, 22, '#d6ffb8', 'crank');
+    ctx.save(); ctx.translate(P.crank.x, P.crank.y - 22); ctx.rotate(P.wheel);
+    ctx.strokeStyle = '#5d4426'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(0, 0, 11, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-11, 0); ctx.lineTo(11, 0); ctx.moveTo(0, -11); ctx.lineTo(0, 11); ctx.stroke();
+    ctx.fillStyle = '#c9a46c'; ctx.beginPath(); ctx.arc(11, 0, 3.5, 0, 7); ctx.fill(); ctx.restore();
+  }
+  const pen = ST.pen;
+  if (pen) {
+    ctx.fillStyle = 'rgba(150,180,90,.35)'; rr(ctx, pen.x0, pen.y0, pen.x1 - pen.x0, pen.y1 - pen.y0, 10); ctx.fill();
+    const post = (x, y) => { ctx.fillStyle = '#7a5a34'; ctx.fillRect(x - 2.5, y - 16, 5, 18); };
+    ctx.strokeStyle = '#c9b27a'; ctx.lineWidth = 3;
+    for (const yy of [-12, -5]) {   // two rails on the top and left sides, with a gap in the left for the gate
+      ctx.beginPath(); ctx.moveTo(pen.x1, pen.y0 + yy); ctx.lineTo(pen.x0, pen.y0 + yy); ctx.lineTo(pen.x0, pen.y0 + 40 + yy); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(pen.x0, pen.y1 - 34 + yy); ctx.lineTo(pen.x0, pen.y1 + yy); ctx.stroke();
+    }
+    for (let x = pen.x0; x <= pen.x1; x += 26) post(x, pen.y0);
+    for (const y of [pen.y0 + 20, pen.y0 + 40, pen.y1 - 34, pen.y1 - 10]) post(pen.x0, y);
+    txt(`pen ${G.ducks.filter(d => d.penned).length}/${G.ducks.length}`, (pen.x0 + pen.x1)/2, pen.y0 - 26, 14, '#fff', 'center', 4, 900);
+  }
+  if (ST.tray) {
+    const {x, y} = ST.tray;
+    ctx.fillStyle = '#8a6a44'; rr(ctx, x - 30, y - 18, 60, 36, 6); ctx.fill();
+    ctx.fillStyle = '#6b4f30'; rr(ctx, x - 26, y - 14, 52, 28, 4); ctx.fill();
+    for (let k=0; k<8; k++) drawSeedling(x - 20 + (k%4)*13, y - 4 + Math.floor(k/4)*12, 1, 0, .85);
+    txt('seedlings', x, y + 30, 12, '#fff', 'center', 3, 800);
+  }
+  if (F.plant) {   // planted seedlings; at sunset they grow into ripe rice
+    const g = G.state === 'end' ? clamp((G.endT - .3)/1.7, 0, 1) : 0;
+    for (const c of PLANT) if (c.s) {
+      if (g > 0) {
+        const k = clamp(g*1.3 - (c.x - PADDY.x0)/(PADDY.x1 - PADDY.x0)*.3, 0, 1);   // a wave of growth across the field
+        if (k > .45) { const s = .45 + (k - .45)*1.1; ctx.save(); ctx.translate(c.x, c.y); ctx.scale(s, s); ctx.rotate(c.tilt*.3); ctx.drawImage(TUFTS[(c.r + c.c) % 4], -SPR_AX, -SPR_AY, SPR_W, SPR_H); ctx.restore(); continue; }
+        drawSeedling(c.x, c.y, c.q, c.tilt, 1 + k*1.4);
+      } else drawSeedling(c.x, c.y, c.q, c.tilt, 1 + Math.max(0, .5 - (G.t - c.t)*2));
+    }
+  }
+}
+function drawSeedling(x, y, q, tilt, s){
+  ctx.save(); ctx.translate(x, y); ctx.rotate(tilt); ctx.scale(s, s);
+  ctx.strokeStyle = q === 3 ? '#5fc24a' : q === 2 ? '#6fb04a' : '#86a64a'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  for (const [dx, h] of [[-3, 9], [0, 12], [3, 10]]) { ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(dx*.5, -h*.6, dx, -h); ctx.stroke(); }
+  ctx.restore();
+}
+function drawThresher(T){
+  base(); const {x, y} = T;
+  ctx.fillStyle = 'rgba(30,20,5,.3)'; ctx.beginPath(); ctx.ellipse(x, y + 2, 60, 12, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#9a7246'; rr(ctx, x - 50, y - 46, 100, 46, 8); ctx.fill();
+  ctx.strokeStyle = '#5d4426'; ctx.lineWidth = 2.5; rr(ctx, x - 50, y - 46, 100, 46, 8); ctx.stroke();
+  // the hopper funnel on the left
+  ctx.fillStyle = '#b48a58'; ctx.beginPath(); ctx.moveTo(x - 62, y - 70); ctx.lineTo(x - 26, y - 70); ctx.lineTo(x - 34, y - 46); ctx.lineTo(x - 54, y - 46); ctx.closePath(); ctx.fill(); ctx.stroke();
+  for (let k=0; k<Math.min(T.qN, 6); k++) ctx.drawImage(SHEAF, x - 56 + k*4, y - 86 + (k%2)*3, 12, 15);
+  // the spinning drum
+  ctx.save(); ctx.translate(x + 6, y - 26); ctx.fillStyle = '#6e5a42'; ctx.beginPath(); ctx.arc(0, 0, 17, 0, 7); ctx.fill();
+  ctx.rotate(T.spin); ctx.strokeStyle = '#d9c59a'; ctx.lineWidth = 3;
+  for (let k=0; k<6; k++) { ctx.rotate(Math.PI/3); ctx.beginPath(); ctx.moveTo(4, 0); ctx.lineTo(16, 0); ctx.stroke(); }
+  ctx.restore();
+  // the chute on the right
+  ctx.fillStyle = '#7d5c38'; ctx.beginPath(); ctx.moveTo(x + 50, y - 30); ctx.lineTo(x + 70, y - 16); ctx.lineTo(x + 66, y - 10); ctx.lineTo(x + 50, y - 18); ctx.closePath(); ctx.fill();
+  if (T.qN) txt(String(T.qN), x - 44, y - 104, 18, '#ffe7a0', 'center', 4, 900);
+}
+function drawBarn(B){
+  base(); const {x, y} = B;
+  ctx.fillStyle = 'rgba(30,20,5,.3)'; ctx.beginPath(); ctx.ellipse(x, y + 4, 52, 12, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#b8574a'; rr(ctx, x - 40, y - 50, 80, 54, 4); ctx.fill();
+  ctx.fillStyle = '#5d3a30'; ctx.beginPath(); ctx.moveTo(x - 50, y - 46); ctx.lineTo(x, y - 84); ctx.lineTo(x + 50, y - 46); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#4a2c22'; rr(ctx, x - 14, y - 30, 28, 34, 3); ctx.fill();
+  ctx.strokeStyle = '#f4e6c8'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x - 14, y - 30); ctx.lineTo(x + 14, y + 4); ctx.moveTo(x + 14, y - 30); ctx.lineTo(x - 14, y + 4); ctx.stroke();
+  txt('barn', x, y - 60, 13, '#fff', 'center', 3, 900);
+}
+function drawCart(c){
+  base();
+  const face = c.hx >= 0 ? 1 : -1, bx = c.x + c.hx*20, by = c.y + c.hy*20, kx = c.x - c.hx*22, ky = c.y - c.hy*22;
+  ctx.fillStyle = 'rgba(30,20,5,.3)'; ctx.beginPath(); ctx.ellipse(c.x, c.y + 2, 58, 12, Math.atan2(c.hy, c.hx)*.3, 0, 7); ctx.fill();
+  // cart
+  ctx.save(); ctx.translate(kx, ky);
+  ctx.fillStyle = '#9a7246'; rr(ctx, -26, -34, 52, 26, 5); ctx.fill(); ctx.strokeStyle = '#5d4426'; ctx.lineWidth = 2.5; ctx.stroke();
+  const pile = Math.ceil(c.loadN/5);
+  for (let k=0; k<pile; k++) ctx.drawImage(SHEAF, -24 + (k%6)*8, -50 - Math.floor(k/6)*8, 13, 16);
+  for (const wx of [-16, 16]) { ctx.save(); ctx.translate(wx, -6); ctx.rotate(c.walk*face); ctx.fillStyle = '#5d4426'; ctx.beginPath(); ctx.arc(0, 0, 9, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#c9a46c'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-7, 0); ctx.lineTo(7, 0); ctx.moveTo(0, -7); ctx.lineTo(0, 7); ctx.stroke(); ctx.restore(); }
+  ctx.restore();
+  // buffalo
+  ctx.save(); ctx.translate(bx, by); ctx.scale(face, 1);
+  const bob = Math.abs(Math.sin(c.walk*3))*2;
+  ctx.fillStyle = '#6f7480'; ctx.beginPath(); ctx.ellipse(0, -18 - bob, 24, 14, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#5d626d'; for (const lx of [-14, -6, 8, 15]) ctx.fillRect(lx - 2.5, -8 - bob, 5, 9 + bob);
+  ctx.fillStyle = '#6f7480'; ctx.beginPath(); ctx.ellipse(24, -22 - bob, 10, 8, 0, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#e9e0cc'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(20, -29 - bob); ctx.quadraticCurveTo(12, -40 - bob, 4, -34 - bob); ctx.moveTo(27, -29 - bob); ctx.quadraticCurveTo(36, -40 - bob, 42, -33 - bob); ctx.stroke();
+  ctx.fillStyle = '#2a1f1a'; ctx.beginPath(); ctx.arc(27, -24 - bob, 1.6, 0, 7); ctx.fill();
+  ctx.restore();
+  if (c.driver) { const d = c.driver, h = cartHead(c); ctx.strokeStyle = '#7a5a34'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(h.x, h.y - 22); ctx.quadraticCurveTo((h.x + d.x)/2, (h.y + d.y)/2, d.x, d.y - 14); ctx.stroke(); }
+  else { const h = cartHead(c); padRing(h.x, h.y, 16, '#d6ffb8', null); }
+  txt(c.loadN ? `${c.loadN}/${CART_MAX}` : 'cart', kx, ky - 62, 13, '#fff', 'center', 3, 900);
+}
+function drawPulley(P){
+  base();
+  // the frame at the top, the rope down to the basket
+  ctx.strokeStyle = '#6b4f30'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(P.x - 18, P.yTop + 10); ctx.lineTo(P.x, P.yTop - 50); ctx.lineTo(P.x + 18, P.yTop + 10); ctx.stroke();
+  ctx.save(); ctx.translate(P.x, P.yTop - 50); ctx.rotate(P.wheel); ctx.strokeStyle = '#3a2b24'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(0, 0, 8, 0, 7); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-8, 0); ctx.lineTo(8, 0); ctx.stroke(); ctx.restore();
+  ctx.strokeStyle = '#e3cf96'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(P.x + 8, P.yTop - 50); ctx.lineTo(P.x + 8, P.y - 26); ctx.stroke();
+  // the basket
+  ctx.fillStyle = '#c49a5a'; rr(ctx, P.x - 16, P.y - 28, 32, 24, 7); ctx.fill(); ctx.strokeStyle = '#7a5a34'; ctx.lineWidth = 2; ctx.stroke();
+  for (let k=0; k<Math.min(6, Math.ceil(P.loadN/5)); k++) ctx.drawImage(SHEAF, P.x - 14 + k*4, P.y - 44, 12, 15);
+}
+function drawStation(e){ ({thresher:drawThresher, barn:drawBarn, cart:drawCart, pulley:drawPulley})[e.kind](e.o); }
+function stationEnts(){
+  const out = [];
+  if (ST.thresher) out.push({kind:'thresher', o:ST.thresher, y:ST.thresher.y});
+  if (ST.barn) out.push({kind:'barn', o:ST.barn, y:ST.barn.y});
+  if (ST.cart) out.push({kind:'cart', o:ST.cart, y:ST.cart.y});
+  if (ST.pulley) out.push({kind:'pulley', o:ST.pulley, y:ST.pulley.y});
+  return out;
+}
+// what you carry, stacked on your back (or your seedlings on planting day)
+function drawLoad(p){
+  base();
+  const y0 = p.y - 58 - p.z;
+  if (F.plant) { drawSeedling(p.x + 14, p.y - 22 - p.z, 3, .3, 1.1); txt(String(p.seeds), p.x + 26, p.y - 34 - p.z, 13, p.seeds ? '#d6ffb8' : '#ffd2c8', 'center', 3, 900); return; }
+  if (!p.loadN) return;
+  for (let k=0; k<p.loadN; k++) ctx.drawImage(SHEAF, p.x - 13 + (k%2)*10, y0 - Math.floor(k/2)*7 - (k%2)*3, 14, 17);
+  if (p.loadN >= CARRY_MAX) txt('FULL', p.x, y0 - 44, 12, '#ffd2c8', 'center', 3, 900);
+}
+function drawFlocks(){
+  base();
+  for (const f of G.flocks) {
+    if (f.state === 'eat') { ctx.fillStyle = 'rgba(30,20,5,.18)'; ctx.beginPath(); ctx.ellipse(f.x, f.y, 44, 16, 0, 0, 7); ctx.fill(); }
+    for (const b of f.birds) {
+      const flap = f.state === 'eat' ? Math.abs(Math.sin(G.t*9 + b.ph))*3 : 0;
+      const x = f.x + b.ox, y = f.y + b.oy - f.alt - flap - 6, w = f.state === 'eat' ? .3 : Math.sin(G.t*30 + b.ph);
+      ctx.fillStyle = '#8a6a48'; ctx.beginPath(); ctx.ellipse(x, y, 6, 4.2, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = '#e9dcc4'; ctx.beginPath(); ctx.ellipse(x + 1, y + 1.5, 3.5, 2, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = '#6b4f30'; ctx.beginPath(); ctx.moveTo(x - 2, y - 1); ctx.lineTo(x - 8, y - 4 - w*5); ctx.lineTo(x + 2, y - 2); ctx.fill();
+      ctx.fillStyle = '#5a3e26'; ctx.beginPath(); ctx.arc(x + 5, y - 2, 2.6, 0, 7); ctx.fill();
+      ctx.fillStyle = '#f0b44a'; ctx.fillRect(x + 7, y - 2.4, 2.5, 1.4);
+    }
+  }
+}
+function drawTosses(){
+  base();
+  for (const t of G.tosses) {
+    if (t.t < 0) continue;
+    const u = t.t/t.dur, x = t.x0 + (t.x1 - t.x0)*u, y = t.y0 + (t.y1 - t.y0)*u - Math.sin(Math.PI*u)*50;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(u*6); ctx.drawImage(SHEAF, -7, -9, 14, 17); ctx.restore();
+  }
+}
+// screen-space effects (no shake): fever glow, sheaves flying to the basket, star moments, confetti
+function drawFx(){
+  base();
+  if (G.fever > 0) {
+    const a = .25 + .15*Math.sin(G.t*12);
+    const gr = ctx.createRadialGradient(W/2, H/2, 260, W/2, H/2, 760);
+    gr.addColorStop(0, 'rgba(255,200,60,0)'); gr.addColorStop(1, `rgba(255,190,40,${a})`);
+    ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H);
+    const pop = 1 + Math.max(0, .3 - (FEVER_T - G.fever))*1.5;
+    ctx.save(); ctx.translate(W/2, SKY_H + 40); ctx.scale(pop, pop); ctx.rotate(Math.sin(G.t*8)*.04);
+    txt('HARVEST FEVER x2', 0, 0, 34, '#fff3a8', 'center', 7, 900); ctx.restore();
+  }
+  for (const f of G.flyers) {
+    if (f.t < 0) continue;
+    const u = clamp(f.t/f.dur, 0, 1), e = u*u, tx = BAR.x0 + (BAR.x1 - BAR.x0)*clamp(G.team/Math.max(1, starT()[2]), 0, 1), ty = BAR.y + 8;
+    const x = f.x + (tx - f.x)*e, y = f.y + (ty - f.y)*e - Math.sin(Math.PI*u)*60;
+    const s = (f.gold ? 1.1 : .8)*(1 - u*.4);
+    ctx.drawImage(f.gold ? SHEAF_GOLD : SHEAF, x - 8*s, y - 10*s, 16*s, 20*s);
+  }
+  if (G.starFx) {
+    const {n, t} = G.starFx, u = clamp(t/.7, 0, 1), e = 1 - (1 - u)**3;
+    const x = W/2 + (barStarX(n - 1) - W/2)*e, y = H/2 - 40 + (BAR.y + 8 - (H/2 - 40))*e, r = 70 - 58*e;
+    ctx.save(); ctx.translate(x, y); ctx.rotate((1 - e)*2); drawStar(0, 0, r, '#ffd84a', '#b07d10'); ctx.restore();
+    if (t < 1.2) { ctx.globalAlpha = clamp(1.2 - t, 0, 1); txt(['One star!', 'Two stars!', 'Three stars!'][n - 1], W/2, H/2 + 50, 44, '#ffe7a0', 'center', 8, 900); ctx.globalAlpha = 1; }
+  }
+  for (const c of G.confetti) {
+    ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.r); ctx.scale(1, Math.cos(c.life*9));
+    ctx.globalAlpha = clamp((c.max - c.life)/.4, 0, 1); ctx.fillStyle = c.c; ctx.fillRect(-c.w/2, -c.w/4, c.w, c.w/2); ctx.restore();
   }
   ctx.globalAlpha = 1;
 }
@@ -1371,11 +2190,20 @@ function drawStar(x, y, r, fill, stroke){
 }
 // co-op HUD: the shared basket against the three star targets
 function drawCoopBar(){
-  const x0 = 520, x1 = 820, y = 64, h = 16, t = starT(), top = t[2];
+  const {x0, x1, y, h} = BAR, t = starT(), top = t[2];
   ctx.fillStyle = 'rgba(40,26,16,.6)'; rr(ctx, x0 - 5, y - 5, x1 - x0 + 10, h + 10, 13); ctx.fill();
-  ctx.fillStyle = '#ffd84a'; rr(ctx, x0, y, Math.max(h, (x1 - x0)*clamp(G.team/top, 0, 1)), h, 8); ctx.fill();
+  ctx.fillStyle = G.fever > 0 ? (Math.floor(G.t*10) % 2 ? '#fff3a8' : '#ffb84a') : '#ffd84a';
+  rr(ctx, x0, y, Math.max(h, (x1 - x0)*clamp(G.team/top, 0, 1)), h, 8); ctx.fill();
   t.forEach((v, i) => { const sx = x0 + (x1 - x0)*v/top; drawStar(sx, y + h/2, 12, G.team >= v ? '#ffd84a' : '#7a6a52', '#3a2b24'); });
-  txt(`🧺 ${G.team}`, x0 - 16, y + h/2, 20, '#fff', 'right', 5, 900);
+  const pop = 1 + G.barPulse*.18;
+  ctx.save(); ctx.translate(x0 - 16, y + h/2); ctx.scale(pop, pop); txt(`🧺 ${Math.round(G.team)}`, 0, 0, 20, '#fff', 'right', 5, 900); ctx.restore();
+  // the fever meter under the bar
+  if (G.state === 'play' || G.state === 'paused') {
+    ctx.fillStyle = 'rgba(40,26,16,.55)'; rr(ctx, x0, y + h + 8, x1 - x0, 7, 4); ctx.fill();
+    ctx.fillStyle = G.fever > 0 ? '#ff7a3d' : G.feverCD > 0 ? '#8a6a52' : '#ff9a4a';
+    rr(ctx, x0, y + h + 8, Math.max(4, (x1 - x0)*G.feverM/100), 7, 4); ctx.fill();
+    txt(G.fever > 0 ? 'FEVER' : '🔥', x1 + 14, y + h + 11, 12, '#fff', 'left', 3, 900);
+  }
 }
 function drawHUD(){
   base();
@@ -1387,15 +2215,15 @@ function drawHUD(){
     ctx.save(); ctx.translate(x+40, y+52); ctx.scale(.95, .95); drawRiceBody(p.col, 0, 0, p.dizzy > 0, p.comboT > 0 && p.combo > 4); ctx.restore();
     txt(`P${p.slot+1}`, x+68, y+20, 15, p.col.d, 'left', 0, 800);
     txt(p.input.type === 'bot' ? 'CPU' : p.input.type === 'key' ? 'keys' : '🎮', x+68, y+44, 13, '#7a6650', 'left', 0, 700);
-    txt(String(p.score), x+178, y+35, 38, '#3a2b24', 'right', 0, 900);
+    txt(String(Math.round(p.score)), x+178, y+35, 38, '#3a2b24', 'right', 0, 900);
   }
   if (G.state === 'play' || G.state === 'paused' || G.state === 'end') {
-    const left = Math.max(0, ROUND - G.clock), m = Math.floor(Math.ceil(left)/60), s = Math.ceil(left) % 60;
+    const left = Math.max(0, roundLen() - G.clock), m = Math.floor(Math.ceil(left)/60), s = Math.ceil(left) % 60;
     const clock = `${m}:${String(s).padStart(2,'0')}`, col = left <= 10 ? '#fff0c0' : '#fff';
     if (COOP) { txt(clock, W/2, 30, 30, col, 'center', 6, 900); drawCoopBar(); }
     else { txt(clock, W/2, 36, 34, col, 'center', 6, 900); txt('until sunset', W/2, 64, 14, '#fff', 'center', 4, 700); }
   } else {
-    txt(`practice: ${LV.name.toLowerCase()}${COOP ? ', co-op' : ''}`, W/2, 40, 22, '#fff', 'center', 5, 800);
+    txt(COOP ? `practice: day ${dayIdx + 1}, ${DAY.name.toLowerCase()}` : `practice: ${LV.name.toLowerCase()}`, W/2, 40, 22, '#fff', 'center', 5, 800);
   }
 }
 function panel(x, y, w, h){ base(); ctx.fillStyle = 'rgba(40,26,16,.8)'; rr(ctx, x, y, w, h, 24); ctx.fill(); }
@@ -1410,8 +2238,11 @@ function drawLobby(){
   const {x, y, w, h} = LOBBY;
   panel(x, y, w, h);
   txt('Harvest Race', W/2, y+56, 60, '#ffe7a0', 'center', 0, 900);
-  txt(COOP ? 'Co-op: one basket for everyone. Fill it by sunset for three stars.'
-           : 'Cut the rice. Walk over the sheaves to grab them. Most rice by sunset wins.', W/2, y+104, 20, '#fff3dc', 'center', 0, 700);
+  if (COOP) {
+    const got = DAY_STARS[DAY.id] || 0;
+    txt(`Co-op, day ${dayIdx + 1} of ${DAYS.length}: one basket for everyone.   Best ${'★'.repeat(got)}${'☆'.repeat(3 - got)}   Total ★ ${totalStars()} / ${DAYS.length*3}`,
+        W/2, y+104, 18, '#fff3dc', 'center', 0, 700);
+  } else txt('Cut the rice. Walk over the sheaves to grab them. Most rice by sunset wins.', W/2, y+104, 20, '#fff3dc', 'center', 0, 700);
   for (let s=0; s<4; s++) {
     const cx = x + 40 + s*180, cy = y + 132, p = G.players.find(q => q.slot === s);
     if (p) {
@@ -1429,15 +2260,20 @@ function drawLobby(){
   }
   // field + mode pickers
   const fy = y + LOBBY.pick;
-  pill(W/2 - 190, fy, '◀ LB', 'RB ▶', `Field: ${LV.name}`);
+  pill(W/2 - 190, fy, '◀ LB', 'RB ▶', COOP ? `Day ${dayIdx + 1}: ${DAY.name}` : `Field: ${LV.name}`);
   pill(W/2 + 190, fy, '◀ LT', 'RT ▶', `Mode: ${COOP ? 'Co-op' : 'Race'}`);
   const terr = WALLS.length > 0;
-  const L = COOP ? [
+  const L = COOP && F.plant ? [
+    'Tap A to plant a seedling where you stand. You hold 12: refill at the tray on the left.',
+    'Tap on the drum beat (when the ring closes) for a Perfect. Plant next to your last one for a row streak.',
+    'Y: a "!" over your head. Perfects fill the fever meter: fever = double points.',
+    DAY.hint,
+  ] : COOP ? [
     'Tap A: swing. Hold A, let go: throw the sickle (it flies back). Y: a "!" over your head.',
     'A rope joins partners (P1 + P2, P3 + P4). Spread out and walk: it cuts everything between you.',
-    'Swing at the same moment, close together: a double spin. A swing beside a dizzy friend wakes them.',
-    terr ? 'At a wall, push up into your partner for a boost. Midday, a storm soaks sheaves left lying.'
-         : 'Midday, a storm rolls over: the rain soaks any sheaf left lying on the ground.',
+    F.carry ? 'You carry what you pick up (12 max, heavier = slower). Walk into a friend to hand it over: +25%.'
+            : 'Swing at the same moment, close together: a double spin. A swing beside a dizzy friend wakes them.',
+    DAY.hint,
   ] : [
     'Tap A: swing. Three quick taps: a spin. Y: a "!" over your head.',
     'Hold A, let go: throw the sickle, it flies back. Wait for the ding for a big throw. Tap: call it back.',
@@ -1449,7 +2285,7 @@ function drawLobby(){
   const solo = COOP && G.players.length === 1;
   txt(!G.players.length ? 'Press A on each controller to join' : solo ? 'Press Start (or G) to begin. View adds a CPU partner.' : 'Press Start (or G) to begin the day',
       W/2, y+408, 24, '#ffe7a0', 'center', 0, 900);
-  txt('View or C: add a CPU      LB / RB or T: field      LT / RT or O: mode      F: full screen      M: sound', W/2, y+438, 13, 'rgba(255,240,210,.75)', 'center', 0, 600);
+  txt(`View or C: add a CPU      LB / RB or T: ${COOP ? 'day' : 'field'}      LT / RT or O: mode      F: full screen      M: sound`, W/2, y+438, 13, 'rgba(255,240,210,.75)', 'center', 0, 600);
   txt('Keys: WASD + Space (E pings), arrows + Enter (/ pings)', W/2, y+456, 13, 'rgba(255,240,210,.75)', 'center', 0, 600);
   // diagnostics: what the browser can see
   let diag;
@@ -1460,9 +2296,10 @@ function drawLobby(){
   if (!AC || AC.state !== 'running') txt('Sound starts after a click or a key press on this computer.', W/2, y+h+18, 13, '#fff', 'center', 4, 700);
 }
 function drawEnd(){
-  const k = clamp(G.endT/.6, 0, 1);
+  const k = clamp((G.endT - END0())/.6, 0, 1);
   base(); ctx.fillStyle = `rgba(20,14,30,${.35*k})`; ctx.fillRect(0, SKY_H, W, H-SKY_H);
-  if (G.endT < .6) return;
+  if (F.plant && G.endT < END0() + .6) { txt('...and by autumn', W/2, SKY_H + 60, 40, '#ffe7a0', 'center', 8, 900); return; }
+  if (G.endT < END0() + .6) return;
   const ranked = [...G.players].sort((a, b) => b.score - a.score), aw = G.awards;
   const leftH = COOP ? 350 : 100 + ranked.length*70, rightH = aw.length ? 100 + aw.length*72 : 0;
   const x = 130, w = 1020, y = 124, h = Math.max(leftH, rightH) + 52;
@@ -1479,7 +2316,7 @@ function drawEnd(){
       ctx.save(); ctx.translate(LX+40, ry+50); drawRiceBody(p.col, 0, 0, false, p.score === top); ctx.restore();
       if (p.score === top) txt('👑', LX+40, ry+6, 22, '#fff', 'center');
       txt(`P${p.slot+1} ${p.col.n}${p.input.type === 'bot' ? ' (CPU)' : ''}`, LX+76, ry+30, 22, '#fff', 'left', 0, 800);
-      txt(String(p.score), LX+LW-20, ry+30, 34, '#fff', 'right', 0, 900);
+      txt(String(Math.round(p.score)), LX+LW-20, ry+30, 34, '#fff', 'right', 0, 900);
     });
   }
   // awards, one by one
@@ -1502,20 +2339,28 @@ function drawEnd(){
 function drawCoopResult(LX, LW, y){
   const lc = LX + LW/2, t = starT();
   for (let i=0; i<3; i++) {
-    const sx = lc + (i - 1)*100, sy = y + 132, since = G.endT - .9 - i*.45, on = i < G.starsGot && since > 0;
+    const sx = lc + (i - 1)*100, sy = y + 132, since = G.endT - END0() - .9 - i*.45, on = i < G.starsGot && since > 0;
     const sc = !on ? 1 : since < .18 ? .4 + since/.18*.9 : Math.max(1, 1.3 - (since - .18)*1.5);
     drawStar(sx, sy, 38*sc, on ? '#ffd84a' : 'rgba(255,255,255,.12)', on ? '#b07d10' : 'rgba(255,255,255,.3)');
   }
-  txt(`Basket: ${G.team} rice`, lc, y + 206, 32, '#fff', 'center', 0, 900);
-  txt(`★ ${t[0]}      ★★ ${t[1]}      ★★★ ${t[2]}`, lc, y + 240, 15, 'rgba(255,240,210,.8)', 'center', 0, 700);
-  txt(`The ducks ate ${G.lostDuck}. The rain soaked ${G.lostRain}.`, lc, y + 264, 15, 'rgba(255,240,210,.8)', 'center', 0, 700);
+  if (G.newStars && G.endT > END0() + 1.9) txt('new best for this day!', lc, y + 176, 14, '#d6ffb8', 'center', 0, 800);
+  txt(`${F.plant ? 'Planted' : 'Basket'}: ${G.team} ${F.plant ? 'points' : 'rice'}`, lc, y + 206, 32, '#fff', 'center', 0, 900);
+  txt(`Day ${dayIdx + 1}: ${DAY.name}      ★ ${t[0]}      ★★ ${t[1]}      ★★★ ${t[2]}`, lc, y + 240, 15, 'rgba(255,240,210,.8)', 'center', 0, 700);
+  const lost = [];
+  if (G.lostDuck) lost.push(`the ducks ate ${G.lostDuck}`);
+  if (G.lostRain) lost.push(`the rain soaked ${G.lostRain}`);
+  if (G.lostBirds) lost.push(`the sparrows ate ${G.lostBirds}`);
+  if (ST.pen) lost.push(`${G.ducks.filter(d => d.penned).length} of ${G.ducks.length} ducks penned`);
+  if (F.plant) lost.push(`${PLANT.filter(c => c.s).length} of ${PLANT.length} spots planted`);
+  const line = lost.join(', ');
+  txt(line ? line[0].toUpperCase() + line.slice(1) + '.' : 'Nothing lost!', lc, y + 264, 15, 'rgba(255,240,210,.8)', 'center', 0, 700);
   const ps = G.players, cw = 126, x0 = lc - (ps.length*(cw + 8) - 8)/2;
   ps.forEach((p, i) => {
     const cx = x0 + i*(cw + 8), cy = y + 288;
     ctx.fillStyle = p.col.c; ctx.globalAlpha = .5; rr(ctx, cx, cy, cw, 52, 14); ctx.fill(); ctx.globalAlpha = 1;
     ctx.save(); ctx.translate(cx + 28, cy + 46); ctx.scale(.75, .75); drawRiceBody(p.col, 0, 0, false, true); ctx.restore();
     txt(`P${p.slot+1}`, cx + 56, cy + 17, 14, '#fff', 'left', 0, 800);
-    txt(String(p.score), cx + cw - 12, cy + 33, 24, '#fff', 'right', 0, 900);
+    txt(String(Math.round(p.score)), cx + cw - 12, cy + 33, 24, '#fff', 'right', 0, 900);
   });
 }
 const MENU = {x:440, y:190, w:400, itemY:300, itemH:64, itemW:320};
@@ -1549,6 +2394,7 @@ addEventListener('pointerdown', e => {
     if (Math.abs(lx - W/2) < MENU.itemW/2 && ly > y && ly < y + 52) { G.menuSel = i; menuChoose(i); }
   });
 });
+function drawEnt(e){ if (e.duck) drawDuck(e); else if (e.kind) drawStation(e); else drawPlayer(e); }
 function draw(){
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   OX = OX0 + (Math.random() - .5)*2*G.shake*SC; OY = OY0 + (Math.random() - .5)*2*G.shake*SC;
@@ -1557,6 +2403,7 @@ function draw(){
   ctx.fillStyle = skyAt(f, 1); ctx.fillRect(0, 0, cv.width, OY + 2);
   base(); ctx.drawImage(BG, 0, 0, W, H);
   drawSky(f);
+  drawPads();
   for (const s of G.sheaves) drawSheaf(s);
   // cut tufts toppling over
   for (const fl of G.falls) {
@@ -1567,15 +2414,16 @@ function draw(){
   }
   ctx.globalAlpha = 1;
   // depth-sorted pass: rice rows in front of you hide you
-  const ents = [...G.players, ...G.ducks].sort((a, b) => a.y - b.y);
+  const ents = [...G.players, ...G.ducks, ...stationEnts()].sort((a, b) => a.y - b.y);
   let ei = 0; const t = G.t;
   for (let r=0; r<ROWS; r++) {
     const rowY = Y0 + r*ROWH;
-    while (ei < ents.length && ents[ei].y < rowY) { const e = ents[ei++]; e.duck ? drawDuck(e) : drawPlayer(e); }
+    while (ei < ents.length && ents[ei].y < rowY) drawEnt(ents[ei++]);
     for (let c=0; c<COLS; c++) { const i = r*COLS + c; if (TALL[i]) drawTuft(i, t); }
   }
-  while (ei < ents.length) { const e = ents[ei++]; e.duck ? drawDuck(e) : drawPlayer(e); }
-  drawRopes(); drawRings();
+  while (ei < ents.length) drawEnt(ents[ei++]);
+  drawRopes(); drawRings(); drawTosses(); drawFlocks();
+  for (const p of G.players) { drawLoad(p); if (F.plant && (G.state === 'play' || G.state === 'lobby')) { base(); beatRing(p.x, p.y, false); } }
   base();
   for (const q of G.parts) {
     const k = q.life/q.max; ctx.fillStyle = q.c;
@@ -1606,6 +2454,7 @@ function draw(){
   for (const tx of G.texts) { ctx.globalAlpha = 1 - tx.life; txt(tx.txt, tx.x, tx.y - tx.life*30, tx.size, tx.col, 'center', 4); }
   ctx.globalAlpha = 1;
   drawHUD();
+  drawFx();
   if (G.state === 'lobby') drawLobby();
   else if (G.state === 'count') {
     const n = 3 - Math.floor(G.countT/(COUNT/3));
@@ -1613,7 +2462,7 @@ function draw(){
     txt('Get ready', W/2, H/2 - 70, 30, '#fff', 'center', 6, 800);
   } else if (G.state === 'play') {
     if (G.goT < .9) { base(); ctx.globalAlpha = 1 - G.goT/.9; txt('Harvest!', W/2, H/2, 110, '#ffe7a0', 'center', 12, 900); ctx.globalAlpha = 1; }
-    const left = ROUND - G.clock;
+    const left = roundLen() - G.clock;
     if (left <= 5 && left > 0) { base(); txt(String(Math.ceil(left)), W/2, SKY_H + 70, 70, '#fff0c0', 'center', 10, 900); }
   } else if (G.state === 'paused') drawPauseMenu();
   else if (G.state === 'end') drawEnd();
@@ -1670,6 +2519,8 @@ const sfxTink = () => tone(1800, .06, 'triangle', .06);
 const sfxCatch = () => { tone(1320, .08, 'triangle', .1); tone(1980, .1, 'sine', .07, null, .03); };
 const sfxBonk = () => tone(240, .2, 'square', .07, 80);
 const sfxHop = () => tone(520, .09, 'triangle', .06, 780);
+const sfxDrum = accent => { tone(accent ? 82 : 110, .18, 'sine', accent ? .22 : .14, 50); noise(.05, 500, 220, accent ? .09 : .05, 1); };
+const sfxDump = () => { noise(.12, 700, 250, .12, 1.2); tone(220, .08, 'triangle', .06, 160); };
 const sfxThunder = () => { noise(1.4, 260, 50, .3, .7); noise(.5, 900, 120, .12, .9, .08); tone(55, 1, 'sine', .12, 38); };
 const sfxThud = () => { tone(130, .14, 'sine', .16, 55); noise(.08, 900, 300, .07, 1.2); };
 const sfxJoin = () => { tone(784, .08, 'triangle', .1); tone(1175, .14, 'triangle', .1, null, .07); };
@@ -1715,13 +2566,15 @@ function frame(now){
   if (!G.manual) update(dt);
   draw();
 }
-resize(); toLobby();
+applyMode(); resize(); toLobby();
 requestAnimationFrame(frame);
 
 window.__harvest = {
   G, N, get tall(){ return tallCount; },
   join, addBot, start: beginRound, lobby: toLobby, startPressed, switchLevel, switchMode, tierAt, wallTop, wallBot,
   get level(){ return LV.id; }, get walls(){ return WALLS; }, get coop(){ return COOP; }, ropePairs, starT, endRound,
+  get day(){ return DAY.id; }, get st(){ return ST; }, get plant(){ return PLANT; },
+  setDay(i){ if (G.state !== 'lobby') return; dayIdx = i; applyMode(); resetWorld(); },
   manual(on){ G.manual = !!on; },
   step(n=1){ for (let k=0; k<n; k++) update(1/60); draw(); },
 };
