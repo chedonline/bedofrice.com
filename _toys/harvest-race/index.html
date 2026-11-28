@@ -396,6 +396,7 @@ function join(input){
     swing:0, lastSlash:-9, slashDur:.2, hop:0, full:false, z:0, vz:0, tier:tierAt(x, y), onStair:false, stairK:-1, stairX:0,
     st:newStats(), ping:false, pingPrev:false, pingT:0, pushT:0, wantUp:0, vault:null, ropeDrag:0, syncT:-9,
     load:0, loadN:0, handCD:0, fullT:0, seeds:SEEDS, rowStreak:0, lastPlant:null, pedCD:0};
+  p.hat = startHat(p);
   G.players.push(p); G.players.sort((a,b) => a.slot - b.slot);
   toast(`P${slot+1} ${p.col.n} joined (${deviceLabel(p)})`);
   sfxJoin(); rumble(p, 120, .4, .4);
@@ -906,7 +907,7 @@ function updatePlayer(p, dt, canAct){
   p.cd = Math.max(0, p.cd-dt); p.slashT = Math.max(0, p.slashT-dt);
   p.dizzy = Math.max(0, p.dizzy-dt); p.catchT = Math.max(0, p.catchT-dt);
   p.pingT = Math.max(0, p.pingT - dt); p.ropeDrag = Math.max(0, p.ropeDrag - dt);
-  if (p.ping && !p.pingPrev && p.connected) doPing(p);
+  if (p.ping && !p.pingPrev && p.connected) { if (G.state === 'lobby') cycleHat(p); else doPing(p); }
   p.pingPrev = p.ping;
   p.pedCD = Math.max(0, p.pedCD - dt); p.handCD = Math.max(0, p.handCD - dt); p.fullT = Math.max(0, p.fullT - dt);
   if (canAct && p.dizzy <= 0 && !p.vault) {
@@ -1631,7 +1632,9 @@ function endRound(cleared){
     try { G.coopBest = +localStorage.getItem(key) || 0; } catch(e) {}
     if (G.team > G.coopBest) { G.coopBest = G.team; G.newBest = true; try { localStorage.setItem(key, G.team); } catch(e) {} } else G.newBest = false;
     G.newStars = G.starsGot > (DAY_STARS[DAY.id] || 0);
+    const before = totalStars();
     if (G.newStars) { DAY_STARS[DAY.id] = G.starsGot; try { localStorage.setItem('harvestCoopStars', JSON.stringify(DAY_STARS)); } catch(e) {} }
+    G.newHats = HATS.filter(h => h.cost > before && h.cost <= totalStars());   // revealed after the awards
     if (G.starsGot === 3 || cleared) confettiRain(G.starsGot === 3 ? 140 : 60);
   } else {
     const top = Math.max(...G.players.map(p => p.score));
@@ -1708,10 +1711,23 @@ function update(dt){
     if (COOP) for (let i=0; i<G.starsGot; i++) if (!G.endSfx.has('s'+i) && G.endT > END0() + .9 + i*.45) {
       G.endSfx.add('s'+i); tone(784*2**(i*4/12), .3, 'triangle', .13); tone(1568*2**(i*4/12), .25, 'sine', .05, null, .03);
     }
+    // a new hat: fanfare, confetti, and everyone on the couch puts it straight on
+    if (COOP && G.newHats && G.newHats.length && !G.endSfx.has('hat') && G.endT > hatAt()) {
+      G.endSfx.add('hat');
+      const h = G.newHats[G.newHats.length - 1];
+      [0, 4, 7, 12, 16, 19, 24].forEach((s, i) => tone(523.25*2**(s/12), .22, 'triangle', .1, null, i*.07));
+      confettiBurst(W/2, 640, 70); confettiRain(60);
+      for (const p of G.players) {
+        if (p.input.type !== 'bot') { p.hat = h.id; const key = inputKey(p.input); if (key) HAT_PICKS[key] = h.id; }
+        rumble(p, 350, .6, .6);
+      }
+      try { localStorage.setItem('harvestHats', JSON.stringify(HAT_PICKS)); } catch(e) {}
+    }
     G.awards.forEach((a, i) => { if (!G.endSfx.has('a'+i) && G.endT > awardAt(i)) { G.endSfx.add('a'+i); tone(1175, .08, 'triangle', .07); tone(1568, .1, 'triangle', .05, null, .06); rumble(a.p, 80, .2, .3); } });
   }
 }
 const awardAt = i => END0() + (COOP ? 2.4 : 1.3) + i*.45;
+const hatAt = () => awardAt(G.awards.length) + .4;
 const END0 = () => COOP && F.plant ? 2.2 : 0;   // planting: time for the grow-up before the panel
 // carry days: the field isn't done while rice is still on someone's back or in a station
 const stillCarrying = () => G.players.some(p => p.loadN) || G.flyers.length || (ST.thresher && ST.thresher.qN) ||
@@ -1760,7 +1776,7 @@ function onigiri(c, w, h){
   c.lineTo(-w*.3, 0); c.quadraticCurveTo(-w*.46, 0, -w*.48, -h*.14);
   c.quadraticCurveTo(-w*.5, -h*.4, -w*.12, -h*.94); c.closePath();
 }
-function drawRiceBody(col, lx, ly, dizzy, happy){
+function drawRiceBody(col, lx, ly, dizzy, happy, hat){
   onigiri(ctx, 34, 34); ctx.fillStyle = '#fffaf0'; ctx.fill();
   ctx.save(); onigiri(ctx, 34, 34); ctx.clip();
   ctx.fillStyle = col.c; ctx.fillRect(-20, -37, 40, 12);
@@ -1779,6 +1795,82 @@ function drawRiceBody(col, lx, ly, dizzy, happy){
     ctx.beginPath(); ctx.arc(-6+lx, -16+ly, 2.3, 0, 7); ctx.arc(6+lx, -16+ly, 2.3, 0, 7); ctx.fill();
   }
   ctx.beginPath(); ctx.arc(lx, -12+ly, 2.6, .15*Math.PI, .85*Math.PI); ctx.stroke();
+  if (hat) drawHat(hat);
+}
+
+// ---- hats: unlocked by your total co-op stars ---------------------------------------
+// drawn in body space: the top of the onigiri is at (0, -35)
+const INK = '#3a2b24';
+function hatPath(fill, f){ ctx.beginPath(); f(); ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.stroke(); }
+const HATS = [
+  {id:'none',   name:'Headscarf',      cost:0,  draw:null},
+  {id:'straw',  name:'Straw hat',      cost:1,  draw(){
+    hatPath('#e8cf8a', () => ctx.ellipse(0, -32, 25, 6, 0, 0, 7));
+    hatPath('#dcbc6c', () => { ctx.moveTo(-15, -33); ctx.quadraticCurveTo(-12, -48, 0, -49); ctx.quadraticCurveTo(12, -48, 15, -33); ctx.closePath(); });
+    ctx.fillStyle = '#c4473b'; ctx.fillRect(-14, -37, 28, 3.5); }},
+  {id:'flower', name:'Hibiscus',       cost:3,  draw(){
+    for (let k=0; k<5; k++) { const a = k*Math.PI*2/5 - Math.PI/2; hatPath('#ff8fb1', () => ctx.ellipse(9 + Math.cos(a)*5, -33 + Math.sin(a)*5, 4.5, 3.2, a, 0, 7)); }
+    ctx.fillStyle = '#ffd84a'; ctx.beginPath(); ctx.arc(9, -33, 2.6, 0, 7); ctx.fill(); }},
+  {id:'chef',   name:'Chef hat',       cost:5,  draw(){
+    hatPath('#ffffff', () => { ctx.rect(-9, -44, 18, 12); });
+    hatPath('#ffffff', () => { ctx.arc(-7, -48, 6, 0, 7); }); hatPath('#ffffff', () => { ctx.arc(7, -48, 6, 0, 7); }); hatPath('#ffffff', () => { ctx.arc(0, -52, 7, 0, 7); });
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(-7.5, -46, 15, 6); }},
+  {id:'party',  name:'Party hat',      cost:7,  draw(){
+    hatPath('#9a85ef', () => { ctx.moveTo(-9, -32); ctx.lineTo(0, -58); ctx.lineTo(9, -32); ctx.closePath(); });
+    ctx.strokeStyle = '#fff3a8'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(-6, -40); ctx.lineTo(5, -44); ctx.moveTo(-3, -48); ctx.lineTo(3, -50); ctx.stroke();
+    hatPath('#ff7b6b', () => ctx.arc(0, -59, 3.5, 0, 7)); }},
+  {id:'bucket', name:'Bucket hat',     cost:9,  draw(){
+    hatPath('#5f9fd8', () => ctx.ellipse(0, -32, 19, 5, 0, 0, 7));
+    hatPath('#6fb0e8', () => { ctx.moveTo(-12, -33); ctx.lineTo(-10, -45); ctx.quadraticCurveTo(0, -49, 10, -45); ctx.lineTo(12, -33); ctx.closePath(); }); }},
+  {id:'wreath', name:'Harvest wreath', cost:12, draw(){
+    for (let k=0; k<9; k++) { const a = Math.PI + k*Math.PI/8; ctx.save(); ctx.translate(Math.cos(a)*15, -27 + Math.sin(a)*9); ctx.rotate(a + Math.PI/2);
+      ctx.fillStyle = k%2 ? '#f2cf63' : '#e2b43c'; ctx.beginPath(); ctx.ellipse(0, 0, 2.6, 5, 0, 0, 7); ctx.fill(); ctx.restore(); } }},
+  {id:'cooker', name:'Rice cooker lid', cost:15, draw(){
+    hatPath('#d9dde3', () => { ctx.ellipse(0, -33, 17, 9, 0, Math.PI, 0); ctx.closePath(); });
+    hatPath('#7a8290', () => { ctx.rect(-3.5, -46, 7, 5); });
+    ctx.fillStyle = 'rgba(255,255,255,.7)'; ctx.beginPath(); ctx.ellipse(-7, -38, 4, 2, -.4, 0, 7); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 1.5; const s = (G.t*2) % 1;   // a puff of steam
+    ctx.globalAlpha = 1 - s; ctx.beginPath(); ctx.moveTo(0, -48 - s*10); ctx.quadraticCurveTo(4, -52 - s*12, 0, -56 - s*14); ctx.stroke(); ctx.globalAlpha = 1; }},
+  {id:'sushi',  name:'Salmon nigiri',  cost:18, draw(){
+    hatPath('#fffaf0', () => ctx.ellipse(0, -37, 13, 6, 0, 0, 7));
+    hatPath('#ff8a6b', () => { ctx.ellipse(0, -41, 15, 6, -.08, 0, 7); });
+    ctx.strokeStyle = 'rgba(255,240,230,.9)'; ctx.lineWidth = 1.6;
+    for (const x of [-8, -2, 4, 10]) { ctx.beginPath(); ctx.moveTo(x - 2, -45); ctx.lineTo(x + 2, -37); ctx.stroke(); } }},
+  {id:'duck',   name:'Duck friend',    cost:21, draw(){
+    ctx.save(); ctx.translate(0, -30); ctx.scale(.8, .8);
+    ctx.strokeStyle = '#4a3c30'; ctx.lineWidth = 1.8; ctx.fillStyle = '#fbf8f0';
+    ctx.beginPath(); ctx.ellipse(0, -8, 11, 7, 0, 0, 7); ctx.fill(); ctx.stroke();
+    const hy = -16 + Math.sin(G.t*4)*1.5;
+    ctx.beginPath(); ctx.arc(8, hy, 5.5, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#f08a24'; ctx.beginPath(); ctx.ellipse(13.5, hy + 1, 3.6, 1.9, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#2a1f1a'; ctx.beginPath(); ctx.arc(10, hy - 1, 1.2, 0, 7); ctx.fill(); ctx.restore(); }},
+  {id:'crown',  name:'Golden crown',   cost:24, draw(){
+    hatPath('#ffd84a', () => { ctx.moveTo(-13, -32); ctx.lineTo(-14, -48); ctx.lineTo(-7, -40); ctx.lineTo(0, -52); ctx.lineTo(7, -40); ctx.lineTo(14, -48); ctx.lineTo(13, -32); ctx.closePath(); });
+    for (const [x, c] of [[-7, '#ff7b6b'], [0, '#38b7a8'], [7, '#9a85ef']]) { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, -36, 2.3, 0, 7); ctx.fill(); }
+    if (Math.sin(G.t*3) > .8) { ctx.fillStyle = '#fffbe0'; ctx.beginPath(); ctx.arc(10, -46, 2, 0, 7); ctx.fill(); } }},
+];
+const hatById = id => HATS.find(h => h.id === id) || HATS[0];
+function drawHat(id){ const h = hatById(id); if (!h.draw) return; ctx.save(); h.draw(); ctx.restore(); }
+const hatsUnlocked = () => HATS.filter(h => h.cost <= totalStars());
+const nextHat = () => HATS.find(h => h.cost > totalStars()) || null;
+// your hat is saved for the controller (or key set) you play with
+let HAT_PICKS = {};
+try { HAT_PICKS = JSON.parse(localStorage.getItem('harvestHats') || '{}') || {}; } catch(e) {}
+const inputKey = inp => inp.type === 'pad' ? 'pad' + inp.index : inp.type === 'key' ? 'key' + inp.set : null;
+function startHat(p){
+  const own = hatsUnlocked();
+  if (p.input.type === 'bot') return own[(Math.random()*own.length)|0].id;
+  const id = HAT_PICKS[inputKey(p.input)];
+  return own.some(h => h.id === id) ? id : 'none';
+}
+function cycleHat(p){
+  const own = hatsUnlocked(), i = own.findIndex(h => h.id === p.hat);
+  if (own.length < 2) { const n = nextHat(); toast(n ? `Earn ★ ${n.cost} in co-op for the ${n.name.toLowerCase()}` : 'All hats unlocked'); tone(220, .08, 'triangle', .05); return; }
+  p.hat = own[(i + 1) % own.length].id;
+  const key = inputKey(p.input);
+  if (key) { HAT_PICKS[key] = p.hat; try { localStorage.setItem('harvestHats', JSON.stringify(HAT_PICKS)); } catch(e) {} }
+  p.squash = -.3; p.hop = .2; tone(880, .06, 'triangle', .07); tone(1320, .08, 'triangle', .06, null, .05);
+  addText(p.x, p.y - 64, hatById(p.hat).name, '#fff', 16);
 }
 function drawSickle(x, y, ang, s){
   ctx.save(); ctx.translate(x, y); ctx.rotate(ang); ctx.scale(s, s); ctx.lineCap = 'round';
@@ -1813,7 +1905,7 @@ function drawPlayer(p){
   ctx.strokeStyle = p.col.d; ctx.lineWidth = 3.4; ctx.lineCap = 'round';
   const fl = Math.sin(G.t*12 + p.slot)*3;
   ctx.beginPath(); ctx.moveTo(-side*12, -31); ctx.quadraticCurveTo(-side*20, -33+fl, -side*24, -28+fl); ctx.stroke();
-  drawRiceBody(p.col, p.fx*3, p.fy*2, p.dizzy > 0, p.catchT > 0 || (p.comboT > 0 && p.combo > 4));
+  drawRiceBody(p.col, p.fx*3, p.fy*2, p.dizzy > 0, p.catchT > 0 || (p.comboT > 0 && p.combo > 4), p.hat);
   ctx.restore();
   if (p.hasSickle && !F.plant) {
     if (p.charging) drawSickle(side*8, -40 - ch*4 - bob, -side*.6 + Math.sin(G.t*40)*.15*ch, 1.1);
@@ -2212,7 +2304,7 @@ function drawHUD(){
     const x = xs[p.slot], y = 14;
     ctx.fillStyle = 'rgba(255,250,240,.92)'; rr(ctx, x, y, 190, 66, 16); ctx.fill();
     ctx.fillStyle = p.col.c; rr(ctx, x, y, 10, 66, [16,0,0,16]); ctx.fill();
-    ctx.save(); ctx.translate(x+40, y+52); ctx.scale(.95, .95); drawRiceBody(p.col, 0, 0, p.dizzy > 0, p.comboT > 0 && p.combo > 4); ctx.restore();
+    ctx.save(); ctx.translate(x+40, y+52); ctx.scale(.95, .95); drawRiceBody(p.col, 0, 0, p.dizzy > 0, p.comboT > 0 && p.combo > 4, p.hat); ctx.restore();
     txt(`P${p.slot+1}`, x+68, y+20, 15, p.col.d, 'left', 0, 800);
     txt(p.input.type === 'bot' ? 'CPU' : p.input.type === 'key' ? 'keys' : '🎮', x+68, y+44, 13, '#7a6650', 'left', 0, 700);
     txt(String(Math.round(p.score)), x+178, y+35, 38, '#3a2b24', 'right', 0, 900);
@@ -2247,9 +2339,9 @@ function drawLobby(){
     const cx = x + 40 + s*180, cy = y + 132, p = G.players.find(q => q.slot === s);
     if (p) {
       ctx.fillStyle = p.col.c; rr(ctx, cx, cy, 160, 96, 16); ctx.fill();
-      ctx.save(); ctx.translate(cx+34, cy+76); drawRiceBody(p.col, 0, 0, false, true); ctx.restore();
+      ctx.save(); ctx.translate(cx+34, cy+76); drawRiceBody(p.col, 0, 0, false, true, p.hat); ctx.restore();
       txt(`P${s+1}`, cx+64, cy+30, 24, '#fff', 'left', 0, 900);
-      txt(p.col.n, cx+64, cy+54, 15, '#fff', 'left', 0, 700);
+      txt(hatById(p.hat).name, cx+64, cy+54, 13, '#fff', 'left', 0, 700);
       txt(deviceLabel(p), cx+80, cy+80, 12, '#fff', 'center', 0, 700);
     } else {
       ctx.setLineDash([7, 7]); ctx.strokeStyle = 'rgba(255,240,210,.6)'; ctx.lineWidth = 2.5;
@@ -2286,7 +2378,9 @@ function drawLobby(){
   txt(!G.players.length ? 'Press A on each controller to join' : solo ? 'Press Start (or G) to begin. View adds a CPU partner.' : 'Press Start (or G) to begin the day',
       W/2, y+408, 24, '#ffe7a0', 'center', 0, 900);
   txt(`View or C: add a CPU      LB / RB or T: ${COOP ? 'day' : 'field'}      LT / RT or O: mode      F: full screen      M: sound`, W/2, y+438, 13, 'rgba(255,240,210,.75)', 'center', 0, 600);
-  txt('Keys: WASD + Space (E pings), arrows + Enter (/ pings)', W/2, y+456, 13, 'rgba(255,240,210,.75)', 'center', 0, 600);
+  const nh = nextHat();
+  txt(`Here, Y (E or /) changes your hat: ${hatsUnlocked().length} of ${HATS.length} unlocked${nh ? `, next at ★ ${nh.cost} (co-op stars)` : ''}.      Keys: WASD + Space, arrows + Enter`,
+      W/2, y+456, 13, '#d6ffb8', 'center', 0, 700);
   // diagnostics: what the browser can see
   let diag;
   if (!navigator.getGamepads) diag = 'This browser has no gamepad support.';
@@ -2313,8 +2407,8 @@ function drawEnd(){
       const ry = y + 100 + i*70;
       ctx.fillStyle = 'rgba(255,250,240,.1)'; rr(ctx, LX, ry, LW, 60, 14); ctx.fill();
       ctx.fillStyle = p.col.c; rr(ctx, LX, ry, LW*clamp((G.endT-.6)/1, 0, 1)*p.score/max, 60, 14); ctx.globalAlpha = .45; ctx.fill(); ctx.globalAlpha = 1;
-      ctx.save(); ctx.translate(LX+40, ry+50); drawRiceBody(p.col, 0, 0, false, p.score === top); ctx.restore();
-      if (p.score === top) txt('👑', LX+40, ry+6, 22, '#fff', 'center');
+      ctx.save(); ctx.translate(LX+40, ry+50); drawRiceBody(p.col, 0, 0, false, p.score === top, p.hat); ctx.restore();
+      if (p.score === top && p.hat !== 'crown') txt('👑', LX+62, ry+12, 18, '#fff', 'center');
       txt(`P${p.slot+1} ${p.col.n}${p.input.type === 'bot' ? ' (CPU)' : ''}`, LX+76, ry+30, 22, '#fff', 'left', 0, 800);
       txt(String(Math.round(p.score)), LX+LW-20, ry+30, 34, '#fff', 'right', 0, 900);
     });
@@ -2327,7 +2421,7 @@ function drawEnd(){
     ctx.save(); ctx.translate(RX + RW/2, cy + 30); ctx.scale(sc, sc); ctx.translate(-(RX + RW/2), -(cy + 30));
     ctx.fillStyle = 'rgba(255,250,240,.12)'; rr(ctx, RX, cy, RW, 60, 14); ctx.fill();
     ctx.fillStyle = a.p.col.c; rr(ctx, RX, cy, 10, 60, [14,0,0,14]); ctx.fill();
-    ctx.save(); ctx.translate(RX + 44, cy + 53); ctx.scale(.8, .8); drawRiceBody(a.p.col, 0, 0, a.title === 'Bonk Magnet', a.title !== 'Bonk Magnet'); ctx.restore();
+    ctx.save(); ctx.translate(RX + 44, cy + 53); ctx.scale(.8, .8); drawRiceBody(a.p.col, 0, 0, a.title === 'Bonk Magnet', a.title !== 'Bonk Magnet', a.p.hat); ctx.restore();
     txt(a.title, RX + 78, cy + 22, 21, '#ffe7a0', 'left', 0, 900);
     txt(`P${a.p.slot+1} ${a.p.col.n}: ${a.desc}`, RX + 78, cy + 44, 14, '#fff3dc', 'left', 0, 700);
     ctx.restore();
@@ -2335,6 +2429,32 @@ function drawEnd(){
   const fy = y + h - 26;
   const best = COOP ? `${G.newBest ? 'New best basket: ' : 'Best basket: '}${G.coopBest}` : `${G.newBest ? 'New best: ' : 'Best: '}${G.best}`;
   txt(`${best}      Start: again      View or Q: lobby`, W/2, fy, 16, 'rgba(255,240,210,.85)', 'center', 0, 700);
+  if (COOP) drawHatCard(y + h + 14);
+}
+// under the end panel: a new hat (big moment), or how far it is to the next one
+function drawHatCard(cy){
+  const t = G.endT - hatAt(); if (t < 0) return;
+  const nh = G.newHats && G.newHats.length ? G.newHats[G.newHats.length - 1] : null, next = nextHat();
+  if (!nh) {
+    if (!next) return;
+    panel(W/2 - 260, cy, 520, 44);
+    const have = totalStars(), prev = [...HATS].reverse().find(h => h.cost <= have).cost;
+    ctx.fillStyle = 'rgba(255,250,240,.15)'; rr(ctx, W/2 - 40, cy + 16, 200, 12, 6); ctx.fill();
+    ctx.fillStyle = '#ffd84a'; rr(ctx, W/2 - 40, cy + 16, Math.max(12, 200*(have - prev)/(next.cost - prev)), 12, 6); ctx.fill();
+    txt(`Next hat: ${next.name}`, W/2 - 56, cy + 22, 15, '#fff3dc', 'right', 0, 800);
+    txt(`★ ${have} / ${next.cost}`, W/2 + 172, cy + 22, 15, '#ffe7a0', 'left', 0, 900);
+    return;
+  }
+  const sc = t < .2 ? .5 + t/.2*.65 : Math.max(1, 1.15 - (t - .2)*.6);
+  ctx.save(); ctx.translate(W/2, cy + 44); ctx.scale(sc, sc); ctx.translate(-W/2, -(cy + 44));
+  ctx.fillStyle = 'rgba(255,216,74,.95)'; rr(ctx, W/2 - 250, cy, 500, 88, 22); ctx.fill();
+  ctx.strokeStyle = '#b07d10'; ctx.lineWidth = 4; rr(ctx, W/2 - 250, cy, 500, 88, 22); ctx.stroke();
+  // the new hat on a big spinning-in onigiri
+  ctx.save(); ctx.translate(W/2 - 180, cy + 80); ctx.scale(1.15, 1.15); ctx.rotate(Math.sin(G.t*3)*.08);
+  drawRiceBody(COLORS[0], 0, 0, false, true, nh.id); ctx.restore();
+  txt(G.newHats.length > 1 ? `${G.newHats.length} new hats!` : 'New hat unlocked!', W/2 - 120, cy + 30, 26, '#3a2b24', 'left', 0, 900);
+  txt(`${G.newHats.map(h => h.name).join(' + ')}. Y changes hats in the lobby.`, W/2 - 120, cy + 60, 14, '#5d4426', 'left', 0, 800);
+  ctx.restore();
 }
 function drawCoopResult(LX, LW, y){
   const lc = LX + LW/2, t = starT();
@@ -2358,7 +2478,7 @@ function drawCoopResult(LX, LW, y){
   ps.forEach((p, i) => {
     const cx = x0 + i*(cw + 8), cy = y + 288;
     ctx.fillStyle = p.col.c; ctx.globalAlpha = .5; rr(ctx, cx, cy, cw, 52, 14); ctx.fill(); ctx.globalAlpha = 1;
-    ctx.save(); ctx.translate(cx + 28, cy + 46); ctx.scale(.75, .75); drawRiceBody(p.col, 0, 0, false, true); ctx.restore();
+    ctx.save(); ctx.translate(cx + 28, cy + 46); ctx.scale(.75, .75); drawRiceBody(p.col, 0, 0, false, true, p.hat); ctx.restore();
     txt(`P${p.slot+1}`, cx + 56, cy + 17, 14, '#fff', 'left', 0, 800);
     txt(String(Math.round(p.score)), cx + cw - 12, cy + 33, 24, '#fff', 'right', 0, 900);
   });
