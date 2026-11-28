@@ -2,6 +2,17 @@
 
 Rough playable sketches for trying game directions before the Godot build. They're plain HTML/JS with no build step. The `_` prefix keeps them off the public site, because GitHub Pages' Jekyll skips underscore folders.
 
+## nigiri-drop/: the super simple one (one button)
+
+Rice beds with faces roll by on a sushi belt, and a topping hangs from chopsticks. Tap to drop it so it lands square on the rice. Open `http://localhost:5181/nigiri-drop/` (or the rig IPs below). Plain 2D canvas, no internet needed.
+
+- **Landing:** Perfect (centre), Good, Sloppy (the topping sits crooked) or Splat (it misses and rides off on the belt). Three splats end the shift. Every 25 nigiri wins a life back.
+- **Score:** Perfect 3, Good 2, Sloppy 1, times a streak multiplier (up to x5) built from Perfects. Sloppy or Splat resets it. Best score is saved on the device.
+- **It gets harder:** the belt speeds up, the rice beds shrink, and after 15 nigiri the chopsticks start to sway.
+- **Controls:** tap, click, Space/Enter/J, or any face button on a controller (rumble on a Splat). P/Esc/Start pauses; it also pauses when the tab is hidden.
+- **Tuning knobs:** the constants at the top of the script (`GRAV`, `PERFECT`/`GOOD`/`SLOPPY`, `SPEED0`/`SPEED_UP`/`SPEED_MAX`, `SWAY_FROM`, `LIVES`, `BONUS_EVERY`).
+- **Testing:** `window.__drop.step(frames)`. `__drop.bot(true)` turns on the auto-chef (the same one that plays the title screen).
+
 ## look-test/: one rice cook in 3D (art direction)
 
 A Three.js sketch (loaded from the jsdelivr CDN, so it needs internet) of the hero as a soft 3D onigiri, to judge the look before any Godot work. Open `http://localhost:5181/look-test/` (or the rig IPs below).

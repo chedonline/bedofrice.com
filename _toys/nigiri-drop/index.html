@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Nigiri Drop · Bed of Rice</title>
+<style>
+html,body{margin:0;height:100%;background:#f1d9b8;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+canvas{display:block}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+'use strict';
+// Nigiri Drop: one button. Rice beds roll by on the belt; tap to drop the topping square on the rice.
+// Tuning knobs
+const GRAV = 2600;          // px/s^2, how fast toppings fall
+const BED_H = 34;           // rice bed height
+const TOP_HW = 58;          // topping half-width (fixed; beds shrink instead)
+const PERFECT = 0.12, GOOD = 0.42, SLOPPY = 0.85; // landing windows, as a fraction of the bed half-width
+const SPEED0 = 150, SPEED_UP = 4.5, SPEED_MAX = 430; // belt px/s, + per nigiri served
+const SWAY_FROM = 15;       // nigiri served before the chopsticks start to sway
+const LIVES = 3, BONUS_EVERY = 25;
+
+const FONT = '"Trebuchet MS","Avenir Next",system-ui,sans-serif';
+const TOPS = {
+  salmon: { base: '#ff8a5c', line: '#ffd9c4', edge: '#e0663a' },
+  tuna:   { base: '#d93a4c', line: '#ef7381', edge: '#a8233a' },
+  tamago: { base: '#ffd54f', line: '#ffe68a', edge: '#e0ac1f' },
+  ebi:    { base: '#ffa184', line: '#fff1ea', edge: '#e5704c' },
+  unagi:  { base: '#8a4523', line: '#b86a34', edge: '#5e2c14' },
+};
+const KINDS = Object.keys(TOPS);
+const rnd = (a, b) => a + Math.random() * (b - a);
+const pick = a => a[Math.random() * a.length | 0];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+const cv = document.getElementById('c'), cx = cv.getContext('2d');
+let W = 800, H = 600, S = 1, DPR = 1, OX = 0, OY = 0;
+function resize() {
+  DPR = Math.min(2, devicePixelRatio || 1);
+  const iw = innerWidth, ih = innerHeight;
+  if (!iw || !ih) return; // the page can start with a 0×0 window
+  W = iw / ih < 0.8 ? 520 : 800; // a narrower counter on a phone held upright, so the sushi stays big
+  H = clamp(W * ih / iw, 520, 1200);
+  S = Math.min(iw / W, ih / H);
+  OX = (iw - W * S) / 2; OY = (ih - H * S) / 2;
+  cv.width = Math.round(iw * DPR); cv.height = Math.round(ih * DPR);
+  cv.style.width = iw + 'px'; cv.style.height = ih + 'px';
+}
+addEventListener('resize', resize); resize();
+
+const norenH = () => Math.min(96, H * 0.13);
+const beltY = () => H * 0.8;
+const dropY = () => Math.max(norenH() + 90, H * 0.3);
+const landY = () => beltY() - 6 - BED_H - 6;
+
+let best = +localStorage.getItem('nigiriDropBest') || 0;
+let BOT = false;
+let G;
+function fresh(mode) {
+  return { mode, t: 0, clock: 0, score: 0, served: 0, lives: LIVES, streak: 0, beds: [], shot: null,
+    cur: pick(KINDS), next: pick(KINDS), reload: 0, open: 0, pops: [], parts: [], splats: [],
+    shake: 0, beltOff: 0, spawnIn: 0, paused: false, newBest: false };
+}
+const mult = () => Math.min(5, 1 + Math.floor(G.streak / 2));
+const speed = () => G.mode === 'title' ? 130 : Math.min(SPEED_MAX, SPEED0 + G.served * SPEED_UP);
+function dropX() {
+  const a = G.mode === 'play' && G.served > SWAY_FROM ? Math.min(150, (G.served - SWAY_FROM) * 7) : 0;
+  return W / 2 + a * Math.sin(G.clock * 1.6);
+}
+
+function spawnBed(x = -90) {
+  const hwMax = 72 - Math.min(18, (G.mode === 'play' ? G.served : 0) * 0.45);
+  const hw = rnd(hwMax - 10, hwMax), sp = [];
+  for (let i = 0; i < 7; i++) sp.push([rnd(-0.8, 0.8), rnd(0.2, 0.85)]);
+  G.beds.push({ x, hw, top: null, q: null, off: 0, tilt: 0, squash: 0, sp, blink: rnd(0, 4), plate: pick(['#eef1f4', '#f6e7d4', '#e4eef0']) });
+}
+function gap() { return rnd(170, G.mode === 'play' ? Math.max(200, 320 - G.served * 3) : 300); }
+
+function start() {
+  G = fresh('play');
+  spawnBed(W * 0.16); spawnBed(-60);
+  G.spawnIn = gap();
+}
+G = fresh('title');
+for (let x = W + 40; x > -100; x -= rnd(180, 280)) spawnBed(x);
+
+// ---------- audio (only while the page is visible) ----------
+let ac = null;
+function audioInit() {
+  if (!ac) { try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (ac && ac.state === 'suspended' && !document.hidden) ac.resume();
+}
+function tone(f, d, type = 'sine', vol = 0.12, f2 = null, delay = 0) {
+  if (!ac || document.hidden) return;
+  const t = ac.currentTime + delay, o = ac.createOscillator(), g = ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(f, t);
+  if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + d);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  o.connect(g).connect(ac.destination); o.start(t); o.stop(t + d + 0.02);
+}
+function rumble(ms, s) {
+  for (const p of (navigator.getGamepads ? navigator.getGamepads() : [])) {
+    if (p && p.vibrationActuator && p.vibrationActuator.playEffect) {
+      try { p.vibrationActuator.playEffect('dual-rumble', { duration: ms, strongMagnitude: s, weakMagnitude: s }); } catch (e) {}
+    }
+  }
+}
+
+// ---------- input: one button (+ pause) ----------
+function press() {
+  audioInit();
+  if (G.paused) { G.paused = false; return; }
+  if (G.mode === 'title') { start(); return; }
+  if (G.mode === 'over') { if (G.t > 0.8) start(); return; }
+  drop();
+}
+function togglePause() { if (G.mode === 'play') G.paused = !G.paused; }
+addEventListener('keydown', e => {
+  if (e.repeat) return;
+  const k = e.code;
+  if (k === 'Space' || k === 'Enter' || k === 'ArrowDown' || k === 'KeyJ' || k === 'KeyS') { e.preventDefault(); press(); }
+  else if (k === 'KeyP' || k === 'Escape') togglePause();
+});
+cv.addEventListener('pointerdown', e => { e.preventDefault(); press(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (G.mode === 'play') G.paused = true; if (ac) ac.suspend(); }
+});
+const padPrev = {};
+function pollPad() {
+  for (const p of (navigator.getGamepads ? navigator.getGamepads() : [])) {
+    if (!p) continue;
+    const prev = padPrev[p.index] || [], now = p.buttons.map(b => b.pressed);
+    if ([0, 1, 2, 3, 5, 7].some(i => now[i] && !prev[i])) press();
+    if (now[9] && !prev[9]) togglePause();
+    padPrev[p.index] = now;
+  }
+}
+
+// ---------- rules ----------
+function drop() {
+  if (G.shot || G.reload > 0) return;
+  G.shot = { x: dropX(), y: dropY(), vy: 0, k: G.cur, rot: 0, spin: 0, missed: false };
+  G.cur = G.next; G.next = pick(KINDS); G.reload = 0.22; G.open = 1;
+  tone(520, 0.06, 'triangle', 0.08, 700);
+}
+function updShot(dt) {
+  const s = G.shot;
+  s.vy += GRAV * dt; s.y += s.vy * dt; s.rot += s.spin * dt;
+  if (!s.missed && s.y >= landY()) {
+    let bb = null, bo = 9;
+    for (const b of G.beds) {
+      if (b.top) continue;
+      const o = (s.x - b.x) / b.hw;
+      if (Math.abs(o) < Math.abs(bo)) { bo = o; bb = b; }
+    }
+    const a = Math.abs(bo);
+    if (bb && a <= SLOPPY) { land(bb, s, a <= PERFECT ? 'Perfect' : a <= GOOD ? 'Good' : 'Sloppy', bo); G.shot = null; return; }
+    s.missed = true; s.spin = rnd(-7, 7);
+  }
+  if (s.missed && s.y >= beltY() - 4) { miss(s); G.shot = null; }
+}
+function land(b, s, q, o) {
+  b.top = s.k; b.q = q; b.off = s.x - b.x; b.squash = 1;
+  b.tilt = q === 'Sloppy' ? o * 0.32 : q === 'Good' ? o * 0.08 : 0;
+  if (q === 'Perfect') G.streak++; else if (q === 'Sloppy') G.streak = 0;
+  const m = mult(), pts = { Perfect: 3, Good: 2, Sloppy: 1 }[q] * m;
+  if (G.mode === 'play') {
+    G.score += pts; G.served++;
+    if (G.served % BONUS_EVERY === 0 && G.lives < LIVES) { G.lives++; pop(W - 80, norenH() + 70, '+1 rice', '#2f8f5b'); }
+  }
+  const col = { Perfect: '#e8590c', Good: '#2f8f5b', Sloppy: '#8a6d3b' }[q];
+  pop(b.x, landY() - 34, q === 'Perfect' && m > 1 ? `Perfect! x${m}` : q === 'Perfect' ? 'Perfect!' : q, col);
+  if (q === 'Perfect') {
+    for (let i = 0; i < 12; i++) G.parts.push({ x: b.x + rnd(-b.hw, b.hw) * 0.7, y: landY() + 4, vx: rnd(-160, 160), vy: rnd(-520, -260), t: rnd(0.4, 0.7), c: '#fffdf6', r: 3 });
+    const up = 1 + 0.06 * Math.min(G.streak, 8);
+    tone(784 * up, 0.09, 'triangle', 0.13); tone(1175 * up, 0.12, 'triangle', 0.11, null, 0.07);
+    rumble(40, 0.2);
+  } else if (q === 'Good') tone(660, 0.1, 'triangle', 0.12);
+  else tone(440, 0.16, 'sine', 0.12, 300);
+}
+function miss(s) {
+  G.splats.push({ x: s.x, k: s.k, r: rnd(-0.3, 0.3) });
+  for (let i = 0; i < 10; i++) G.parts.push({ x: s.x, y: beltY() - 4, vx: rnd(-220, 220), vy: rnd(-380, -120), t: rnd(0.3, 0.55), c: TOPS[s.k].base, r: 4 });
+  tone(180, 0.25, 'square', 0.05, 90); rumble(180, 0.7); G.shake = 1;
+  if (G.mode !== 'play') return;
+  G.lives--; G.streak = 0;
+  pop(s.x, beltY() - 70, 'Splat!', '#c0392b');
+  if (G.lives <= 0) {
+    G.mode = 'over'; G.t = 0;
+    if (G.score > best) { best = G.score; G.newBest = true; localStorage.setItem('nigiriDropBest', best); }
+  }
+}
+function pop(x, y, text, c) { G.pops.push({ x, y, text, c, t: 0.9 }); }
+
+// the attract-mode chef (and a test bot): drops when a bed will arrive square under the topping
+function bot() {
+  if (!(G.mode === 'title' || (BOT && G.mode === 'play' && !G.paused)) || G.shot || G.reload > 0) return;
+  const v = speed(), dx = dropX(), tf = Math.sqrt(2 * (landY() - dropY()) / GRAV);
+  for (const b of G.beds) {
+    if (b.top) continue;
+    if (Math.abs(b.x + v * tf - dx) < v / 60 * 0.6) { drop(); break; }
+  }
+}
+
+function update(dt) {
+  if (G.paused) return;
+  G.t += dt; G.clock += dt;
+  const v = speed();
+  G.beltOff = (G.beltOff + v * dt) % 40;
+  G.spawnIn -= v * dt;
+  if (G.spawnIn <= 0) { spawnBed(); G.spawnIn = gap(); }
+  for (const b of G.beds) { b.x += v * dt; b.squash = Math.max(0, b.squash - dt * 4); }
+  G.beds = G.beds.filter(b => b.x < W + 120);
+  for (const s of G.splats) s.x += v * dt;
+  G.splats = G.splats.filter(s => s.x < W + 80);
+  G.reload = Math.max(0, G.reload - dt); G.open = Math.max(0, G.open - dt * 3); G.shake = Math.max(0, G.shake - dt * 3);
+  if (G.shot) updShot(dt);
+  for (const p of G.parts) { p.vy += 1400 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.t -= dt; }
+  G.parts = G.parts.filter(p => p.t > 0);
+  for (const p of G.pops) { p.t -= dt; p.y -= 40 * dt; }
+  G.pops = G.pops.filter(p => p.t > 0);
+}
+
+// ---------- drawing ----------
+function rr(x, y, w, h, r) { cx.beginPath(); cx.roundRect(x, y, w, h, r); }
+function drawRoom() {
+  const by = beltY(), nh = norenH();
+  const g = cx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#fff4e4'); g.addColorStop(1, '#f1d9b8');
+  cx.fillStyle = g; cx.fillRect(0, 0, W, H);
+  cx.strokeStyle = 'rgba(180,140,100,0.12)'; cx.lineWidth = 2;
+  for (let x = 24; x < W; x += 48) { cx.beginPath(); cx.moveTo(x, nh); cx.lineTo(x, by - 40); cx.stroke(); }
+  const pw = W / 5;
+  for (let i = 0; i < 5; i++) { rr(i * pw + 3, -12, pw - 6, nh + 12, 10); cx.fillStyle = '#2d3e63'; cx.fill(); }
+  cx.fillStyle = '#fff8ec'; cx.font = `700 ${Math.round(nh * 0.34)}px ${FONT}`; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  ['b e d', '·', 'o f', '·', 'r i c e'].forEach((t, i) => cx.fillText(t, i * pw + pw / 2, nh * 0.52));
+  cx.fillStyle = '#c98f58'; cx.fillRect(0, by + 26, W, H - by - 26);
+  cx.fillStyle = '#b27a45'; cx.fillRect(0, by + 26, W, 8);
+  cx.strokeStyle = 'rgba(110,60,25,0.16)'; cx.lineWidth = 2;
+  for (let y = by + 52; y < H; y += 26) { cx.beginPath(); cx.moveTo(0, y); cx.bezierCurveTo(W * 0.3, y - 6, W * 0.6, y + 6, W, y - 2); cx.stroke(); }
+  cx.fillStyle = '#3b3f48'; cx.fillRect(0, by, W, 26);
+  cx.fillStyle = '#575d6a'; cx.fillRect(0, by, W, 5);
+  cx.strokeStyle = 'rgba(255,255,255,0.09)';
+  for (let x = -40 + G.beltOff; x < W + 40; x += 40) { cx.beginPath(); cx.moveTo(x, by + 7); cx.lineTo(x - 8, by + 26); cx.stroke(); }
+}
+function topShape(k, attached) {
+  const c = TOPS[k], w = TOP_HW * 2, h = 16;
+  if (k === 'ebi') {
+    cx.fillStyle = '#e2452f';
+    cx.beginPath(); cx.moveTo(w / 2 - 6, -2); cx.lineTo(w / 2 + 14, -13); cx.lineTo(w / 2 + 8, 2); cx.lineTo(w / 2 + 14, 13); cx.closePath(); cx.fill();
+  }
+  rr(-w / 2, -h / 2, w, h, 8); cx.fillStyle = c.base; cx.fill();
+  cx.save(); cx.clip();
+  if (k === 'salmon' || k === 'ebi') {
+    cx.strokeStyle = c.line; cx.lineWidth = k === 'ebi' ? 5 : 3;
+    const st = k === 'ebi' ? 17 : 13;
+    for (let x = -w / 2 - 10; x < w / 2 + 10; x += st) { cx.beginPath(); cx.moveTo(x, -h / 2); cx.lineTo(x + 8, h / 2); cx.stroke(); }
+  } else if (k === 'tuna') {
+    cx.fillStyle = c.line; cx.globalAlpha = 0.45; cx.beginPath(); cx.ellipse(-w * 0.12, -2, w * 0.3, 3, 0, 0, 7); cx.fill(); cx.globalAlpha = 1;
+  } else if (k === 'tamago') {
+    cx.fillStyle = c.line; rr(-w / 2 + 4, -h / 2 + 2, w - 8, 4, 2); cx.fill();
+  } else if (k === 'unagi') {
+    cx.strokeStyle = c.line; cx.lineWidth = 3;
+    for (let x = -w / 2 + 8; x < w / 2; x += 14) { cx.beginPath(); cx.moveTo(x, -h / 2); cx.quadraticCurveTo(x + 4, 0, x, h / 2); cx.stroke(); }
+    cx.fillStyle = '#fff3dc'; for (let i = 0; i < 6; i++) { cx.beginPath(); cx.ellipse(-w / 2 + 14 + i * 17, -2 + (i % 2) * 3, 1.8, 1, 0.5, 0, 7); cx.fill(); }
+  }
+  cx.fillStyle = 'rgba(255,255,255,0.28)'; rr(-w / 2 + 10, -h / 2 + 2, w - 20, 3, 2); cx.fill();
+  cx.restore();
+  rr(-w / 2, -h / 2, w, h, 8); cx.lineWidth = 2; cx.strokeStyle = c.edge; cx.stroke();
+  if (k === 'tamago') { cx.fillStyle = '#1e2b25'; rr(-7, -h / 2 - 1, 14, attached ? h + BED_H * 0.7 : h + 2, 3); cx.fill(); }
+}
+function drawTop(k, x, y, rot, sy = 1) { cx.save(); cx.translate(x, y); cx.rotate(rot); cx.scale(1, sy); topShape(k, false); cx.restore(); }
+function drawFace(b) {
+  const ey = -BED_H * 0.45, ex = b.hw * 0.32;
+  const near = !b.top && G.shot && !G.shot.missed && Math.abs(G.shot.x - b.x) < b.hw * 1.6;
+  const look = near ? clamp((G.shot.x - b.x) / 60, -1, 1) * 2.2 : 0;
+  cx.fillStyle = cx.strokeStyle = '#3a2a22'; cx.lineWidth = 2.4; cx.lineCap = 'round';
+  if (b.q === 'Perfect' || b.q === 'Good') {
+    cx.fillStyle = 'rgba(255,120,130,0.4)';
+    for (const s of [-1, 1]) { cx.beginPath(); cx.ellipse(s * (ex + 10), ey + 7, 6, 3.5, 0, 0, 7); cx.fill(); }
+    cx.fillStyle = '#3a2a22';
+  }
+  if (b.q === 'Perfect') {
+    for (const s of [-1, 1]) { cx.beginPath(); cx.arc(s * ex, ey + 2, 4, Math.PI * 1.15, Math.PI * 1.85); cx.stroke(); }
+  } else if (((G.clock + b.blink) % 4) < 0.12 && !near) {
+    for (const s of [-1, 1]) { cx.beginPath(); cx.moveTo(s * ex - 3, ey); cx.lineTo(s * ex + 3, ey); cx.stroke(); }
+  } else {
+    for (const s of [-1, 1]) {
+      cx.beginPath(); cx.ellipse(s * ex + look, ey - (near ? 1 : 0), 3.2, near ? 4.6 : 3.6, 0, 0, 7); cx.fill();
+      cx.fillStyle = '#fff'; cx.beginPath(); cx.arc(s * ex + look + 1, ey - 1.5, 1.1, 0, 7); cx.fill(); cx.fillStyle = '#3a2a22';
+    }
+  }
+  const my = ey + 8;
+  cx.beginPath();
+  if (b.q === 'Perfect') { cx.arc(0, my - 1, 4.5, 0, Math.PI); cx.closePath(); cx.fill(); }
+  else if (b.q === 'Good') { cx.arc(0, my - 2, 3.5, 0.2, Math.PI - 0.2); cx.stroke(); }
+  else if (b.q === 'Sloppy') { cx.moveTo(-5, my); cx.quadraticCurveTo(-2.5, my - 3, 0, my); cx.quadraticCurveTo(2.5, my + 3, 5, my); cx.stroke(); }
+  else if (near) { cx.ellipse(0, my, 2.4, 3, 0, 0, 7); cx.fill(); }
+  else { cx.arc(0, my - 3, 2.5, 0.3, Math.PI - 0.3); cx.stroke(); }
+}
+function drawBed(b) {
+  const by = beltY();
+  rr(b.x - b.hw - 14, by - 8, b.hw * 2 + 28, 10, 5); cx.fillStyle = b.plate; cx.fill();
+  cx.lineWidth = 1.5; cx.strokeStyle = 'rgba(0,0,0,0.12)'; cx.stroke();
+  cx.save(); cx.translate(b.x, by - 6); cx.scale(1 + 0.12 * b.squash, 1 - 0.18 * b.squash);
+  rr(-b.hw, -BED_H, b.hw * 2, BED_H, 16); cx.fillStyle = '#fffdf6'; cx.fill();
+  cx.lineWidth = 2.5; cx.strokeStyle = '#e3d6c2'; cx.stroke();
+  cx.fillStyle = '#efe5d3';
+  for (const [gx, gy] of b.sp) { cx.beginPath(); cx.ellipse(gx * b.hw, -gy * BED_H, 4, 2.2, gx, 0, 7); cx.fill(); }
+  drawFace(b);
+  if (b.top) { cx.save(); cx.translate(b.off, -BED_H - 3); cx.rotate(b.tilt); topShape(b.top, true); cx.restore(); }
+  cx.restore();
+}
+function drawSplat(s) {
+  cx.save(); cx.translate(s.x, beltY() + 1); cx.rotate(s.r); cx.scale(0.8, 0.45); topShape(s.k, false); cx.restore();
+}
+function drawDropper() {
+  const dx = dropX(), dy = dropY();
+  if (G.mode === 'play') {
+    cx.strokeStyle = 'rgba(60,40,30,0.13)'; cx.setLineDash([4, 9]); cx.lineWidth = 2;
+    cx.beginPath(); cx.moveTo(dx, dy + 14); cx.lineTo(dx, landY()); cx.stroke(); cx.setLineDash([]);
+  }
+  if (!G.shot && G.reload <= 0 && G.mode !== 'over') drawTop(G.cur, dx, dy, Math.sin(G.clock * 3) * 0.03);
+  const o = G.open * 10;
+  cx.lineCap = 'round';
+  for (const [x0, y0, y1] of [[150, -120, -10 - o], [172, -100, 8 + o]]) {
+    cx.strokeStyle = '#8a5a33'; cx.lineWidth = 7; cx.beginPath(); cx.moveTo(dx + x0, dy + y0); cx.lineTo(dx + 12, dy + y1); cx.stroke();
+    cx.strokeStyle = '#a8743f'; cx.lineWidth = 2.5; cx.beginPath(); cx.moveTo(dx + x0 - 1, dy + y0 - 1); cx.lineTo(dx + 40, dy + y1 - 4); cx.stroke();
+  }
+}
+function oni(x, y, on) {
+  cx.save(); cx.translate(x, y); cx.globalAlpha = on ? 1 : 0.25; cx.lineJoin = 'round';
+  cx.beginPath(); cx.moveTo(0, -13); cx.lineTo(13, 10); cx.lineTo(-13, 10); cx.closePath();
+  cx.lineWidth = 11; cx.strokeStyle = '#dccbb2'; cx.stroke();
+  cx.lineWidth = 8; cx.strokeStyle = '#fffdf6'; cx.stroke(); cx.fillStyle = '#fffdf6'; cx.fill();
+  cx.fillStyle = '#1e2b25'; rr(-6, 4, 12, 11, 2); cx.fill();
+  cx.restore();
+}
+function drawHUD() {
+  const nh = norenH();
+  cx.textAlign = 'left'; cx.textBaseline = 'alphabetic';
+  cx.fillStyle = '#3a2a22'; cx.font = `800 40px ${FONT}`; cx.fillText(G.score, 24, nh + 52);
+  const sw = cx.measureText(String(G.score)).width;
+  if (mult() > 1) { cx.fillStyle = '#e8590c'; cx.font = `800 22px ${FONT}`; cx.fillText('x' + mult(), 34 + sw, nh + 50); }
+  cx.fillStyle = 'rgba(58,42,34,0.55)'; cx.font = `600 15px ${FONT}`; cx.fillText('best ' + best, 26, nh + 74);
+  for (let i = 0; i < LIVES; i++) oni(W - 34 - i * 36, nh + 34, i < G.lives);
+  cx.textAlign = 'center'; cx.fillStyle = 'rgba(58,42,34,0.55)'; cx.font = `600 13px ${FONT}`; cx.fillText('next', W - 70, nh + 72);
+  cx.save(); cx.translate(W - 70, nh + 88); cx.scale(0.45, 0.45); topShape(G.next, false); cx.restore();
+}
+function panel(lines) {
+  const w = 480, h = 40 + lines.length * 40, x = W / 2 - w / 2, y = Math.max(norenH() + 20, H * 0.36 - h / 2);
+  cx.fillStyle = 'rgba(255,253,246,0.94)'; rr(x, y, w, h, 22); cx.fill();
+  cx.lineWidth = 3; cx.strokeStyle = '#e3d6c2'; cx.stroke();
+  cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  lines.forEach(([t, size, col, wt], i) => { cx.fillStyle = col; cx.font = `${wt || 700} ${size}px ${FONT}`; cx.fillText(t, W / 2, y + 40 + i * 40); });
+}
+function draw() {
+  const iw = innerWidth, ih = innerHeight;
+  cx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  cx.fillStyle = '#f1d9b8'; cx.fillRect(0, 0, iw, ih);
+  const sh = G.shake * 6;
+  cx.setTransform(DPR * S, 0, 0, DPR * S, DPR * (OX + rnd(-sh, sh)), DPR * (OY + rnd(-sh, sh)));
+  cx.save(); cx.beginPath(); cx.rect(0, 0, W, H); cx.clip();
+  drawRoom();
+  for (const s of G.splats) drawSplat(s);
+  for (const b of G.beds) drawBed(b);
+  drawDropper();
+  if (G.shot) drawTop(G.shot.k, G.shot.x, G.shot.y, G.shot.rot);
+  for (const p of G.parts) { cx.fillStyle = p.c; cx.beginPath(); cx.ellipse(p.x, p.y, p.r * 1.4, p.r, p.vx * 0.003, 0, 7); cx.fill(); }
+  cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  for (const p of G.pops) {
+    cx.globalAlpha = clamp(p.t * 2, 0, 1); cx.font = `800 26px ${FONT}`;
+    cx.lineWidth = 6; cx.strokeStyle = '#fffdf6'; cx.strokeText(p.text, p.x, p.y);
+    cx.fillStyle = p.c; cx.fillText(p.text, p.x, p.y); cx.globalAlpha = 1;
+  }
+  if (G.mode !== 'title') drawHUD();
+  const blink = 0.55 + 0.45 * Math.sin(G.clock * 4);
+  if (G.mode === 'title') panel([
+    ['Nigiri Drop', 44, '#2d3e63', 800], ['a Bed of Rice toy', 16, '#8a6d3b', 600],
+    ['Drop the topping square on the rice.', 19, '#3a2a22', 600], ['One button: tap, click, Space or A', 16, '#8a6d3b', 600],
+    ['Tap to start', 22, `rgba(232,89,12,${blink})`, 800]]);
+  else if (G.mode === 'over') panel([
+    ["Shift's over", 40, '#2d3e63', 800], [`${G.score} points · ${G.served} nigiri`, 22, '#3a2a22', 700],
+    [G.newBest ? 'New best!' : `best ${best}`, 18, G.newBest ? '#e8590c' : '#8a6d3b', 700],
+    [G.t > 0.8 ? 'Tap to go again' : '', 22, `rgba(232,89,12,${blink})`, 800]]);
+  else if (G.paused) panel([['Paused', 40, '#2d3e63', 800], ['Tap to keep going', 20, '#8a6d3b', 700]]);
+  cx.restore();
+}
+
+let last = performance.now();
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (cv.width !== Math.round(innerWidth * DPR)) resize();
+  pollPad(); bot(); update(dt); draw();
+}
+requestAnimationFrame(frame);
+
+// test hook
+window.__drop = {
+  get G() { return G; }, press, drop,
+  bot(on) { BOT = on; },
+  step(n = 1) { for (let i = 0; i < n; i++) { bot(); update(1 / 60); } draw(); return { mode: G.mode, score: G.score, served: G.served, lives: G.lives, streak: G.streak }; },
+};
+</script>
+</body>
+</html>
