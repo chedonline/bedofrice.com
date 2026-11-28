@@ -218,7 +218,7 @@ function placePlayers(){
   for (const p of G.players) {
     [p.x, p.y] = SPAWNS[p.slot]; p.vx = p.vy = 0; p.fx = p.slot%2 ? -1 : 1; p.fy = 0;
     p.score = 0; p.hasSickle = true; p.holding = p.charging = false; p.holdT = 0;
-    p.cd = 0; p.dizzy = 0; p.combo = 0; p.ai = null; p.hitBy = null;
+    p.cd = 0; p.dizzy = 0; p.combo = 0; p.ai = null; p.hitBy = null; p.prev = true; p.buffer = 0;
   }
 }
 function updatePlayer(p, dt, canAct){
@@ -474,6 +474,12 @@ addEventListener('keydown', e => {
   if (e.repeat) return;
   keys.add(e.code);
   const c = e.code;
+  if (G.state === 'paused') {
+    if (c === 'ArrowUp' || c === 'KeyW') return menuMove(-1);
+    if (c === 'ArrowDown' || c === 'KeyS') return menuMove(1);
+    if (c === 'Space' || c === 'Enter' || c === 'NumpadEnter') return menuChoose();
+    if (c === 'Backspace') return pause(false);
+  }
   if (c === 'KeyF') toggleFullscreen();
   else if (c === 'KeyG') startPressed();
   else if (c === 'KeyP' || c === 'Escape') { if (G.state === 'play') pause(true); else if (G.state === 'paused') pause(false); }
@@ -489,7 +495,7 @@ addEventListener('blur', () => keys.clear());
 addEventListener('gamepadconnected', e => toast(`Controller ${e.gamepad.index+1} found: press A to join`));
 addEventListener('gamepaddisconnected', e => toast(`Controller ${e.gamepad.index+1} disconnected`));
 
-const padPrev = {};
+const padPrev = {}, padAxisPrev = {};
 function pollPads(){
   let pads = [];
   try { pads = navigator.getGamepads ? navigator.getGamepads() : []; } catch(e) {}
@@ -502,6 +508,20 @@ function pollPads(){
     const edge = i => now[i] && !prev[i];
     const owner = G.players.find(p => p.input.type === 'pad' && p.input.index === pad.index);
     if (now.some((v,i) => v && !prev[i])) wake();
+    // stick as menu up/down (edge-triggered like a button)
+    const ay = pad.axes[1] || 0, dir = ay < -.6 ? -1 : ay > .6 ? 1 : 0;
+    const stickEdge = dir !== 0 && dir !== (padAxisPrev[pad.index] || 0);
+    padAxisPrev[pad.index] = dir;
+    if (G.state === 'paused') {
+      if (edge(12) || (stickEdge && dir < 0)) menuMove(-1);
+      else if (edge(13) || (stickEdge && dir > 0)) menuMove(1);
+      else if (edge(0)) menuChoose();
+      else if (edge(1)) pause(false);          // B closes the menu
+      else if (edge(9)) pause(false);
+      else if (edge(8)) toLobby();
+      padPrev[pad.index] = now;
+      continue;
+    }
     if (edge(9)) startPressed();
     if (edge(8)) backPressed();
     if (!owner && G.state === 'lobby' && ACTION_BTNS.some(edge)) {
@@ -565,7 +585,23 @@ function beginRound(){
   resetWorld(); G.state = 'count'; G.countT = 0; G.clock = 0; G.cleared = false; G.lastBeep = -1;
 }
 function toLobby(){ resetWorld(); G.state = 'lobby'; }
-function pause(on){ if (on && G.state === 'play') { G.state = 'paused'; tone(440, .1, 'triangle', .08); } else if (!on && G.state === 'paused') G.state = 'play'; }
+function pause(on){
+  if (on && G.state === 'play') { G.state = 'paused'; G.menuSel = 0; tone(440, .1, 'triangle', .08); }
+  else if (!on && G.state === 'paused') {
+    G.state = 'play';
+    // a button still held from the menu must not count as a fresh swing
+    for (const p of G.players) { p.prev = true; p.holding = p.charging = false; p.holdT = 0; p.buffer = 0; }
+  }
+}
+// pause menu: stick/d-pad or arrows to move, A/Space/Enter/click to choose, B/Backspace closes
+const PAUSE_ITEMS = ['Resume', 'Restart', 'Back to lobby'];
+function menuMove(d){ G.menuSel = (G.menuSel + d + PAUSE_ITEMS.length) % PAUSE_ITEMS.length; tone(660, .05, 'triangle', .06); }
+function menuChoose(i = G.menuSel){
+  tone(880, .08, 'triangle', .08);
+  if (i === 0) pause(false);
+  else if (i === 1) beginRound();
+  else toLobby();
+}
 function endRound(cleared){
   G.state = 'end'; G.endT = 0; G.cleared = !!cleared;
   for (const b of G.booms) b.owner.hasSickle = true;
@@ -905,6 +941,33 @@ function drawEnd(){
   const fy = y + h - 30;
   txt(`${G.newBest ? 'New best: ' : 'Best: '}${G.best}      Start: again      View or Q: lobby`, W/2, fy, 16, 'rgba(255,240,210,.85)', 'center', 0, 700);
 }
+const MENU = {x:440, y:190, w:400, itemY:300, itemH:64, itemW:320};
+function drawPauseMenu(){
+  base(); ctx.fillStyle = 'rgba(20,14,30,.35)'; ctx.fillRect(0, SKY_H, W, H-SKY_H);
+  const h = 130 + PAUSE_ITEMS.length*MENU.itemH + 50;
+  panel(MENU.x, MENU.y, MENU.w, h);
+  txt('Paused', W/2, MENU.y + 62, 52, '#ffe7a0', 'center', 0, 900);
+  PAUSE_ITEMS.forEach((label, i) => {
+    const y = MENU.itemY + i*MENU.itemH, x = W/2 - MENU.itemW/2, sel = i === G.menuSel;
+    if (sel) {
+      const pulse = 1 + Math.sin(G.t*6)*.015;
+      ctx.save(); ctx.translate(W/2, y + 26); ctx.scale(pulse, pulse);
+      ctx.fillStyle = '#ffe7a0'; rr(ctx, -MENU.itemW/2, -26, MENU.itemW, 52, 26); ctx.fill(); ctx.restore();
+      txt('▶', x + 30, y + 26, 20, '#3a2b24', 'center', 0, 900);
+    }
+    txt(label, W/2, y + 26, 28, sel ? '#3a2b24' : '#fff3dc', 'center', 0, sel ? 900 : 700);
+  });
+  txt('A: choose      B: back to the game', W/2, MENU.y + h - 30, 16, 'rgba(255,240,210,.75)', 'center', 0, 700);
+}
+// mouse / touch on the pause menu
+addEventListener('pointerdown', e => {
+  if (G.state !== 'paused') return;
+  const lx = (e.clientX*DPR - OX0)/SC, ly = (e.clientY*DPR - OY0)/SC;
+  PAUSE_ITEMS.forEach((_, i) => {
+    const y = MENU.itemY + i*MENU.itemH;
+    if (Math.abs(lx - W/2) < MENU.itemW/2 && ly > y && ly < y + 52) { G.menuSel = i; menuChoose(i); }
+  });
+});
 function draw(){
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   OX = OX0 + (Math.random() - .5)*2*G.shake*SC; OY = OY0 + (Math.random() - .5)*2*G.shake*SC;
@@ -969,11 +1032,8 @@ function draw(){
     if (G.goT < .9) { base(); ctx.globalAlpha = 1 - G.goT/.9; txt('Harvest!', W/2, H/2, 110, '#ffe7a0', 'center', 12, 900); ctx.globalAlpha = 1; }
     const left = ROUND - G.clock;
     if (left <= 5 && left > 0) { base(); txt(String(Math.ceil(left)), W/2, SKY_H + 70, 70, '#fff0c0', 'center', 10, 900); }
-  } else if (G.state === 'paused') {
-    panel(440, 260, 400, 180);
-    txt('Paused', W/2, 320, 52, '#ffe7a0', 'center', 0, 900);
-    txt('Start: carry on      View or Q: lobby', W/2, 390, 18, '#fff3dc', 'center', 0, 700);
-  } else if (G.state === 'end') drawEnd();
+  } else if (G.state === 'paused') drawPauseMenu();
+  else if (G.state === 'end') drawEnd();
   if (G.toast) {
     base(); const a = clamp(Math.min(G.toast.t/.15, (2.6 - G.toast.t)/.4), 0, 1);
     ctx.globalAlpha = a; ctx.font = `700 18px ${FONT}`; const tw = ctx.measureText(G.toast.msg).width + 40;
