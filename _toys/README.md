@@ -2,6 +2,19 @@
 
 Rough playable sketches for trying game directions before the Godot build. They're plain HTML/JS with no build step. The `_` prefix keeps them off the public site, because GitHub Pages' Jekyll skips underscore folders.
 
+## harvest-race/: cut the paddy, grab the sheaves (1 to 4 players, one button)
+
+A paddy of tall ripe rice seen from above. Cut it, then walk over the sheaves to collect them. Whoever has the most rice by sunset (90 s) wins, or when the field is bare. This is the calm "harvest race" mode of the Boomerang Fu-style hide-and-seek idea: inside tall rice you're hidden (only the rustle and your P-marker show). Plain 2D canvas, one file, no internet needed. Open `http://localhost:5181/harvest-race/` (or the rig IPs below).
+
+- **The button:** tap swings the sickle. Three quick taps = left, right, then a bigger spin. Hold, then let go, throws the sickle like a boomerang: it mows a lane out and back. Hold until the *ding* for a full-power throw (longer, wider). Tap while it's out calls it back. A thrown sickle that hits another player makes them dizzy for a moment.
+- **Moving:** tall rice is slow to wade through and stubble is fast, so cutting paths is part of the plan. Three ducks wander the paddy and eat sheaves left on the ground.
+- **Feel (the point of this toy):** snappy like Overcooked (instant facing, quick acceleration, buffered taps so a press is never eaten) with Mario-style weight (momentum, a short slide when you stop, a skid with dust when you reverse, a lean into speed changes, squash on footsteps). The sickle gets hit-stop and screen shake scaled to how much it cut, toppling stalks, rumble while the boomerang mows, and a twirl on the catch.
+- **Lobby = practice field:** joined players can run around and cut before starting; the rice grows back.
+- **Controls:** controller: stick + any face button, Start begins and pauses, View adds a CPU (or removes them when full). Keyboard: WASD + Space, arrows + Enter; G starts, C adds a CPU, P pauses, Q goes back to the lobby, F full screen, M sound.
+- **Two Xbox controllers on the Mac, mirrored to the Apple TV:** pair both controllers with the Mac over Bluetooth, open `http://10.0.0.130:5181/harvest-race/` in Chrome (or `http://100.84.97.111:5181/harvest-race/` on Tailscale), click *Full screen* (that click also turns the sound on), then mirror the display to the Apple TV from Control Centre → Screen Mirroring. Press A on each controller to join. Chrome only lists a controller after a button press; the lobby shows which controllers it can see. If none show up, open the file straight from Dropbox on the Mac (`~/Dropbox/claude/projects/bedofrice.com/_toys/harvest-race/index.html`): it's a single file.
+- **Tuning knobs:** the constants at the top of the script (`SPEED_OPEN`/`SPEED_RICE`, `ACCEL`/`FRICTION`/`SKID`/`LEAN`, `SLASH_R`/`SLASH_CD`, `HOLD_MIN`/`CHARGE_T`/`THROW_MIN`/`THROW_MAX`/`BOOM_SPEED`, `ROUND`, `DUCKS`).
+- **Testing:** `__harvest.manual(true)` stops the clock, then `__harvest.step(frames)`. `__harvest.addBot()` adds a CPU, `__harvest.start()` begins a round.
+
 ## nigiri-drop/: the super simple one (one button)
 
 Rice beds with faces roll by on a sushi belt, and a topping hangs from chopsticks. Tap to drop it so it lands square on the rice. Open `http://localhost:5181/nigiri-drop/` (or the rig IPs below). Plain 2D canvas, no internet needed.

@@ -1,0 +1,1083 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Harvest Race · Bed of Rice</title>
+<style>
+  html,body{margin:0;height:100%;background:#6f8d3c;overflow:hidden;touch-action:none}
+  canvas{display:block;width:100vw;height:100vh}
+  body.idle canvas{cursor:none}
+  #fs{position:fixed;top:10px;right:10px;z-index:2;font:600 14px ui-rounded,system-ui,sans-serif;
+      background:rgba(40,28,18,.7);color:#fff3d0;border:0;border-radius:999px;padding:8px 14px;cursor:pointer}
+  body.idle #fs,:fullscreen #fs{display:none}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<button id="fs" title="Full screen (F)">⛶ Full screen</button>
+<script>
+'use strict';
+/* Harvest Race: a Bed of Rice toy. 1 to 4 players cut a paddy of tall rice and
+   walk over the sheaves to collect them. Most rice by sunset wins.
+   One button: tap = swing the sickle, hold + let go = throw it (it flies back),
+   tap while it's out = call it back. Start = begin / pause. */
+
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const W = 1280, H = 720;
+const FONT = "ui-rounded,'SF Pro Rounded','Nunito','Segoe UI',system-ui,sans-serif";
+
+// ---- tuning knobs -------------------------------------------------------
+const ROUND = 90;            // seconds from sunrise to sunset
+const COUNT = 2.4;           // 3-2-1 before the day starts
+const SPEED_OPEN = 235;      // px/s on stubble, the bund, cut paths
+const SPEED_RICE = 135;      // px/s wading through tall rice
+const ACCEL = 2600;          // px/s² speeding up: high = snappy start (top speed in ~0.09 s)
+const FRICTION = 1900;       // px/s² slowing down with the stick let go: a short slide = weight
+const SKID = 5200;           // px/s² when you reverse at speed (skid + dust)
+const LEAN = .22;            // how far the body tips into a change of speed
+const CHARGE_SLOW = 0.55;    // speed multiplier while winding up a throw
+const SLASH_R = 54, SLASH_CD = 0.18;   // the spin (3rd tap) waits 0.4 s
+const HOLD_MIN = 0.18, CHARGE_T = 0.75;     // hold longer than HOLD_MIN = throw
+const THROW_MIN = 170, THROW_MAX = 600, BOOM_SPEED = 640, BOOM_R = 24;
+const PICK_R = 26, MAGNET_R = 54;
+const GOLD_CHANCE = 0.035, GOLD_VALUE = 5;
+const DUCKS = 3, DUCK_EAT = 2.2, DIZZY = 0.8;
+
+// ---- layout ---------------------------------------------------------------
+const SKY_H = 108;
+const BUND = {x0:16, y0:110, x1:1264, y1:714}, BW = 26;
+const PADDY = {x0:BUND.x0+BW, y0:BUND.y0+BW, x1:BUND.x1-BW, y1:BUND.y1-BW};
+const CELL = 24, ROWH = 21;
+const X0 = PADDY.x0 + 14, Y0 = PADDY.y0 + 30;
+const COLS = Math.floor((PADDY.x1 - 14 - X0 - CELL/2) / CELL) + 1;
+const ROWS = Math.floor((PADDY.y1 - 6 - Y0) / ROWH) + 1;
+const N = COLS * ROWS;
+const TX = new Float32Array(N), TY = new Float32Array(N), RUST = new Float32Array(N), PH = new Float32Array(N);
+const TALL = new Uint8Array(N), GOLD = new Uint8Array(N), VAR = new Uint8Array(N);
+let tallCount = 0;
+
+const COLORS = [
+  {c:'#ff7b6b', d:'#c4473b', n:'Salmon'},
+  {c:'#38b7a8', d:'#1f7d72', n:'Matcha'},
+  {c:'#f2b632', d:'#b07d10', n:'Tamago'},
+  {c:'#9a85ef', d:'#5f4bb5', n:'Ube'},
+];
+const SPAWNS = [[BUND.x0+14,BUND.y0+16],[BUND.x1-14,BUND.y0+16],[BUND.x0+14,BUND.y1-8],[BUND.x1-14,BUND.y1-8]];
+
+const G = {
+  state:'lobby', t:0, clock:0, countT:0, endT:0, goT:0, cleared:false,
+  players:[], ducks:[], sheaves:[], booms:[], parts:[], texts:[], falls:[], hitstop:0, shake:0,
+  gust:{on:false, x:-300, next:4}, toast:null, padsSeen:[], manual:false, best:0,
+};
+try { G.best = +localStorage.getItem('harvestRaceBest') || 0; } catch(e) {}
+
+const rand = (a,b) => a + Math.random()*(b-a);
+const clamp = (v,a,b) => v<a?a:v>b?b:v;
+
+// ---- sprites ----------------------------------------------------------------
+function mk(w,h){ const c=document.createElement('canvas'); c.width=w; c.height=h; return c; }
+const SPR_W=44, SPR_H=60, SPR_AX=22, SPR_AY=56;
+function makeTuft(seed, gold){
+  const c = mk(SPR_W*2, SPR_H*2), g = c.getContext('2d'); g.scale(2,2);
+  let s = seed; const rnd = () => (s = (s*16807) % 2147483647) / 2147483647;
+  g.fillStyle = 'rgba(60,40,10,.28)'; g.beginPath(); g.ellipse(SPR_AX, SPR_AY, 13, 5, 0, 0, 7); g.fill();
+  g.lineCap = 'round';
+  g.strokeStyle = '#8f8a3a'; g.lineWidth = 1.8;
+  for (const d of [-1,1]) { g.beginPath(); g.moveTo(SPR_AX, SPR_AY-2); g.quadraticCurveTo(SPR_AX+d*10, SPR_AY-18, SPR_AX+d*16, SPR_AY-13); g.stroke(); }
+  const stalks = 9;
+  for (let i=0; i<stalks; i++) {
+    const bx = SPR_AX + (i-(stalks-1)/2)*2.2 + (rnd()-.5)*2;
+    const lean = (i-(stalks-1)/2)*1.6 + (rnd()-.5)*4;
+    const h = 40 + rnd()*12, tx = bx + lean, ty = SPR_AY - h;
+    g.strokeStyle = i%2 ? '#a88a34' : '#c4a447'; g.lineWidth = 1.6;
+    g.beginPath(); g.moveTo(bx, SPR_AY-1); g.quadraticCurveTo(bx+lean*.3, SPR_AY-h*.6, tx, ty); g.stroke();
+    const dir = lean >= 0 ? 1 : -1;
+    for (let k=0; k<6; k++) {
+      const u = k/5, gx = tx + dir*u*7, gy = ty + u*u*12 - 1;
+      g.fillStyle = gold ? (k%2?'#ffd84a':'#fff3a8') : (k%2?'#e2b43c':'#f2cf63');
+      g.beginPath(); g.ellipse(gx, gy, 2.1, 1.4, dir*(.6+u), 0, 7); g.fill();
+    }
+  }
+  return c;
+}
+const TUFTS = [1,2,3,4].map(k => makeTuft(k*7919, false));
+const GOLDS = [5,6].map(k => makeTuft(k*7919, true));
+function makeSheaf(gold){
+  const c = mk(32,40), g = c.getContext('2d'); g.scale(2,2); g.lineCap='round';
+  for (let i=0; i<7; i++) {
+    const bx = 8+(i-3)*.8, tx = 8+(i-3)*2.3;
+    g.strokeStyle = i%2?'#b8963c':'#d3b04f'; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(bx,19); g.lineTo(tx,4); g.stroke();
+    g.fillStyle = gold ? (i%2?'#ffe066':'#fff4b0') : (i%2?'#e9bd45':'#f6d777');
+    g.beginPath(); g.ellipse(tx,3.5,1.7,3.1,(i-3)*.15,0,7); g.fill();
+  }
+  g.fillStyle = gold ? '#e0662c' : '#8a5a2b'; g.fillRect(4.3,11,7.4,2.4);
+  return c;
+}
+const SHEAF = makeSheaf(false), SHEAF_GOLD = makeSheaf(true);
+
+// field background (ground + stubble gets stamped in as rice is cut)
+const BG = mk(W*2, H*2), bg = BG.getContext('2d'); bg.scale(2,2);
+function rr(c,x,y,w,h,r){ c.beginPath(); c.roundRect ? c.roundRect(x,y,w,h,r) : c.rect(x,y,w,h); }
+function paintBG(){
+  let s = 12345; const rnd = () => (s = (s*16807) % 2147483647) / 2147483647;
+  bg.fillStyle = '#6f8d3c'; bg.fillRect(0,0,W,H);
+  for (let i=0; i<500; i++) { bg.fillStyle = rnd()<.5 ? 'rgba(40,70,20,.25)' : 'rgba(150,180,90,.25)'; bg.fillRect(rnd()*W, rnd()*H, 2, 4); }
+  rr(bg, BUND.x0, BUND.y0, BUND.x1-BUND.x0, BUND.y1-BUND.y0, 18); bg.fillStyle = '#86a24a'; bg.fill();
+  bg.strokeStyle = '#ab935a'; bg.lineWidth = 12;
+  rr(bg, BUND.x0+BW/2, BUND.y0+BW/2, BUND.x1-BUND.x0-BW, BUND.y1-BUND.y0-BW, 12); bg.stroke();
+  rr(bg, PADDY.x0, PADDY.y0, PADDY.x1-PADDY.x0, PADDY.y1-PADDY.y0, 10); bg.fillStyle = '#8a7443'; bg.fill();
+  for (let i=0; i<1600; i++) {
+    const x = PADDY.x0 + rnd()*(PADDY.x1-PADDY.x0), y = PADDY.y0 + rnd()*(PADDY.y1-PADDY.y0);
+    bg.fillStyle = rnd()<.5 ? 'rgba(60,45,20,.2)' : 'rgba(190,160,100,.16)';
+    bg.fillRect(x, y, 2+rnd()*4, 1+rnd()*2);
+  }
+  bg.strokeStyle = 'rgba(50,35,15,.35)'; bg.lineWidth = 4;
+  rr(bg, PADDY.x0+2, PADDY.y0+2, PADDY.x1-PADDY.x0-4, PADDY.y1-PADDY.y0-4, 9); bg.stroke();
+}
+function stampStubble(x,y){
+  bg.fillStyle = 'rgba(70,50,20,.22)'; bg.beginPath(); bg.ellipse(x,y,9,3.5,0,0,7); bg.fill();
+  bg.lineCap = 'round'; bg.lineWidth = 1.5;
+  for (let k=0; k<6; k++) {
+    const bx = x + (k-2.5)*2.4 + rand(-1,1), h = rand(4,8);
+    bg.strokeStyle = k%2 ? '#c2a456' : '#9b7f36';
+    bg.beginPath(); bg.moveTo(bx, y); bg.lineTo(bx + rand(-1.5,1.5), y-h); bg.stroke();
+  }
+}
+
+// terraced hills on the horizon
+const HILLS = [0,1].map(L => {
+  const pts = []; let x = -10, y = L ? 80 : 64;
+  while (x <= W+60) { pts.push([x,y]); x += 28 + Math.random()*54; pts.push([x,y]); y = clamp(y + (Math.random()-.5)*16, L?64:46, L?98:86); }
+  return pts;
+});
+
+// ---- field ----------------------------------------------------------------
+function resetField(){
+  paintBG(); tallCount = 0;
+  for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) {
+    const i = r*COLS + c;
+    TX[i] = X0 + c*CELL + ((r&1) ? CELL/2 : 0) + rand(-3,3);
+    TY[i] = Y0 + r*ROWH + rand(-2.5,2.5);
+    TALL[i] = 1; GOLD[i] = Math.random() < GOLD_CHANCE ? 1 : 0;
+    RUST[i] = 0; PH[i] = Math.random()*6.283; VAR[i] = (Math.random()*4)|0;
+    tallCount++;
+  }
+}
+function eachCell(x,y,rad,fn){
+  const r0 = Math.max(0, Math.floor((y-rad-Y0)/ROWH)), r1 = Math.min(ROWS-1, Math.ceil((y+rad-Y0)/ROWH));
+  const c0 = Math.max(0, Math.floor((x-rad-X0)/CELL)-1), c1 = Math.min(COLS-1, Math.ceil((x+rad-X0)/CELL));
+  for (let r=r0; r<=r1; r++) for (let c=c0; c<=c1; c++) {
+    const i = r*COLS + c, dx = TX[i]-x, dy = TY[i]-y;
+    if (dx*dx + dy*dy <= rad*rad && fn(i) === true) return true;
+  }
+  return false;
+}
+const tallNear = (x,y,rad) => eachCell(x,y,rad, i => TALL[i] === 1);
+function rustleAt(x,y,rad,amt){ eachCell(x,y,rad, i => { if (TALL[i]) RUST[i] = Math.min(1, RUST[i]+amt); }); }
+function cutCircle(x,y,rad){
+  let n = 0;
+  eachCell(x,y,rad, i => { if (TALL[i]) { cutTuft(i,x,y); n++; } });
+  return n;
+}
+function cutTuft(i,sx,sy){
+  TALL[i] = 0; tallCount--;
+  stampStubble(TX[i], TY[i]);
+  let dx = TX[i]-sx, dy = TY[i]-sy; const d = Math.hypot(dx,dy) || 1; dx/=d; dy/=d;
+  // the cut tuft topples over away from the blade
+  if (G.falls.length < 180) G.falls.push({spr: GOLD[i] ? GOLDS[VAR[i]&1] : TUFTS[VAR[i]], x:TX[i], y:TY[i], dir: dx >= 0 ? 1 : -1, life:0, spd:rand(.8,1.2)});
+  G.sheaves.push({x:TX[i], y:TY[i], z:20, vx:dx*rand(40,110)+rand(-20,20), vy:dy*rand(40,110)+rand(-20,20),
+                  vz:rand(150,240), gold:GOLD[i]===1, t:0, landed:false, dead:false, eat:0});
+  if (G.parts.length < 400) for (let k=0; k<3; k++)
+    G.parts.push({x:TX[i], y:TY[i], z:rand(10,40), vx:rand(-90,90), vy:rand(-60,60), vz:rand(60,200), life:0, max:rand(.4,.8), c:Math.random()<.5?'#f2cf63':'#c4a447'});
+}
+
+// ---- players ---------------------------------------------------------------
+function join(input){
+  if (G.players.length >= 4) return null;
+  const slot = [0,1,2,3].find(s => !G.players.some(p => p.slot === s));
+  const [x,y] = SPAWNS[slot];
+  const p = {slot, col:COLORS[slot], input, x, y, vx:0, vy:0, fx:slot%2?-1:1, fy:0,
+    mx:0, my:0, btn:false, prev:false, holding:false, holdT:0, charging:false, hasSickle:true,
+    cd:0, slashT:0, score:0, dizzy:0, walk:0, squash:0, combo:0, comboT:0, inRice:false,
+    connected:true, ai:null, catchT:0, hitBy:null, skid:0, lean:0, wasMoving:false,
+    swing:0, lastSlash:-9, slashDur:.2, hop:0, full:false};
+  G.players.push(p); G.players.sort((a,b) => a.slot - b.slot);
+  toast(`P${slot+1} ${p.col.n} joined (${deviceLabel(p)})`);
+  sfxJoin(); rumble(p, 120, .4, .4);
+  return p;
+}
+function deviceLabel(p){
+  const i = p.input;
+  if (i.type === 'bot') return 'CPU';
+  if (i.type === 'key') return i.set === 'A' ? 'WASD + Space' : 'arrows + Enter';
+  return /xbox|xinput|045e/i.test(i.id||'') ? `Xbox controller ${i.index+1}` : `controller ${i.index+1}`;
+}
+function placePlayers(){
+  for (const p of G.players) {
+    [p.x, p.y] = SPAWNS[p.slot]; p.vx = p.vy = 0; p.fx = p.slot%2 ? -1 : 1; p.fy = 0;
+    p.score = 0; p.hasSickle = true; p.holding = p.charging = false; p.holdT = 0;
+    p.cd = 0; p.dizzy = 0; p.combo = 0; p.ai = null; p.hitBy = null;
+  }
+}
+function updatePlayer(p, dt, canAct){
+  if (!canAct || !p.connected) { p.mx = p.my = 0; }
+  const pressed = p.btn && !p.prev, released = !p.btn && p.prev; p.prev = p.btn;
+  p.cd = Math.max(0, p.cd-dt); p.slashT = Math.max(0, p.slashT-dt);
+  p.dizzy = Math.max(0, p.dizzy-dt); p.catchT = Math.max(0, p.catchT-dt);
+  if (canAct && p.dizzy <= 0) {
+    if (pressed) {
+      if (p.hasSickle) { if (p.cd <= 0) slash(p); else p.buffer = .2; p.holding = true; p.holdT = 0; p.charging = false; }
+      else recall(p);
+    }
+    // input buffer: a tap made during the cooldown fires as soon as it ends (snappy, never eaten)
+    p.buffer = Math.max(0, (p.buffer || 0) - dt);
+    if (p.buffer > 0 && p.cd <= 0 && p.hasSickle && !p.charging) { p.buffer = 0; slash(p); }
+    if (p.holding && p.btn && p.hasSickle) {
+      p.holdT += dt; if (p.holdT > HOLD_MIN) p.charging = true;
+      if (p.charging && !p.full && p.holdT - HOLD_MIN >= CHARGE_T) { p.full = true; tone(1568, .14, 'triangle', .09); tone(2349, .12, 'sine', .05, null, .04); rumble(p, 70, .2, .5); }
+    }
+    if (released && p.holding) { if (p.charging && p.hasSickle) throwSickle(p); p.holding = p.charging = false; p.holdT = 0; p.full = false; }
+  } else { p.holding = p.charging = false; p.holdT = 0; p.full = false; }
+  const m = Math.hypot(p.mx, p.my);
+  if (m > .25) { p.fx = p.mx/m; p.fy = p.my/m; }   // facing turns instantly (snappy)
+  p.inRice = tallNear(p.x, p.y, 16);
+  let sp = p.inRice ? SPEED_RICE : SPEED_OPEN;
+  if (p.charging) sp *= CHARGE_SLOW;
+  if (p.dizzy > 0) sp *= .35;
+  // momentum: accelerate hard, slide a little when you let go, skid when you reverse
+  const spd0 = Math.hypot(p.vx, p.vy), tvx = p.mx*sp, tvy = p.my*sp;
+  let acc;
+  if (m > .1) {
+    const dot = spd0 > 1 ? (p.vx*p.mx + p.vy*p.my)/(spd0*m) : 1;
+    if (dot < -.3 && spd0 > 140) {
+      acc = SKID;
+      if (p.skid <= 0) { p.skid = .22; p.squash = .22; puff(p.x, p.y, 7, '#e0d2a6'); sfxSkid(); }
+    } else acc = p.inRice ? ACCEL*.7 : ACCEL;
+  } else acc = p.inRice ? FRICTION*1.6 : FRICTION;
+  p.skid = Math.max(0, p.skid - dt);
+  const dvx = tvx - p.vx, dvy = tvy - p.vy, dv = Math.hypot(dvx, dvy);
+  if (dv > 0) { const st = Math.min(dv, acc*dt); p.vx += dvx/dv*st; p.vy += dvy/dv*st; }
+  p.lean += (clamp(dvx/SPEED_OPEN*LEAN, -LEAN, LEAN) - p.lean)*(1 - Math.exp(-dt*12));
+  p.x = clamp(p.x + p.vx*dt, BUND.x0+9, BUND.x1-9);
+  p.y = clamp(p.y + p.vy*dt, BUND.y0+12, BUND.y1-5);
+  const spd = Math.hypot(p.vx, p.vy), moving = spd > 40;
+  if (moving && !p.wasMoving) p.squash = Math.min(p.squash, -.14);                 // stretch on take-off
+  if (!moving && p.wasMoving && spd0 > 150) { p.squash = Math.max(p.squash, .16); puff(p.x, p.y, 3, '#e0d2a6'); } // plant on stop
+  p.wasMoving = moving;
+  const step0 = Math.floor(p.walk);
+  p.walk += spd*dt*.055;
+  if (Math.floor(p.walk) !== step0 && spd > 80) { p.squash = Math.max(p.squash, .09); if (!p.inRice) puff(p.x - p.vx*.03, p.y, 2, '#d6c595'); }
+  if (spd > 30) rustleAt(p.x, p.y, 24, dt*10);
+  p.squash *= Math.exp(-dt*10);
+  p.hop = Math.max(0, p.hop - dt);
+  p.comboT -= dt; if (p.comboT <= 0) p.combo = 0;
+}
+// tap, tap, tap = left swing, right swing, spin (bigger). Chain window 0.5 s.
+function slash(p){
+  const chain = G.t - p.lastSlash < .5; p.lastSlash = G.t;
+  p.swing = chain ? (p.swing + 1) % 3 : 0;
+  const spin = p.swing === 2;
+  const R = spin ? SLASH_R*1.35 : SLASH_R;
+  p.cd = spin ? .4 : SLASH_CD;
+  p.slashT = p.slashDur = spin ? .3 : .2;
+  p.squash = spin ? -.22 : .25;
+  if (spin) p.hop = .2;
+  // a little lunge forward on each swing (weight)
+  p.vx += p.fx*(spin ? 40 : 90); p.vy += p.fy*(spin ? 40 : 90);
+  const n = cutCircle(spin ? p.x : p.x + p.fx*12, spin ? p.y : p.y + p.fy*9, R);
+  sfxSlash(n, p.swing);
+  if (n) { rumble(p, 50 + n*6, Math.min(1, .08 + n*.04), Math.min(1, .3 + n*.03)); impact(n, spin); }
+  if (n >= 10) addText(p.x, p.y - 64, `${n}!`, '#fff', 18 + Math.min(10, n - 10));
+  scareDucks(p.x, p.y, 100);
+}
+// hit-stop + screen shake, scaled by how much rice one swing took
+function impact(n, big){
+  if (n >= 3) G.hitstop = Math.max(G.hitstop, Math.min(.1, .012 + n*.004 + (big ? .03 : 0)));
+  G.shake = Math.max(G.shake, Math.min(7, .8 + n*.32 + (big ? 2 : 0)));
+}
+function puff(x, y, n, c){
+  for (let k=0; k<n && G.parts.length < 420; k++)
+    G.parts.push({dust:true, x:x + rand(-6,6), y:y + rand(-2,2), z:2, vx:rand(-60,60), vy:rand(-25,25), vz:rand(20,60), life:0, max:rand(.3,.5), c});
+}
+function throwSickle(p){
+  const ch = clamp((p.holdT-HOLD_MIN)/CHARGE_T, 0, 1), full = ch >= 1;
+  p.hasSickle = false; p.squash = -.3;
+  p.vx -= p.fx*70; p.vy -= p.fy*70;   // recoil
+  G.booms.push({owner:p, x:p.x+p.fx*12, y:p.y+p.fy*12, dx:p.fx, dy:p.fy, dist:THROW_MIN+(THROW_MAX-THROW_MIN)*ch,
+                r: full ? BOOM_R*1.4 : BOOM_R, full, trav:0, back:false, bsp:140, spin:0, whirr:0, rt:0, trail:[]});
+  sfxThrow(ch); rumble(p, 90, full ? .5 : .3, .2);
+  if (full) G.shake = Math.max(G.shake, 3);
+}
+function recall(p){
+  const b = G.booms.find(b => b.owner === p);
+  if (b && !b.back) { b.back = true; tone(880, .06, 'triangle', .06); }
+}
+function updateBoom(b, dt){
+  b.spin += dt*(b.full ? 30 : 22); b.rt -= dt;
+  const px = b.x, py = b.y;
+  if (!b.back) {
+    const step = BOOM_SPEED*(.3 + .7*(1 - b.trav/b.dist))*dt;
+    b.x += b.dx*step; b.y += b.dy*step; b.trav += step;
+    if (b.x < BUND.x0+6 || b.x > BUND.x1-6 || b.y < BUND.y0+6 || b.y > BUND.y1-4) {
+      b.x = clamp(b.x, BUND.x0+6, BUND.x1-6); b.y = clamp(b.y, BUND.y0+6, BUND.y1-4); b.back = true; sfxTink();
+    }
+    if (b.trav >= b.dist) b.back = true;
+  } else {
+    const o = b.owner, dx = o.x - b.x, dy = o.y - b.y, d = Math.hypot(dx,dy) || 1;
+    b.bsp = Math.min(BOOM_SPEED*1.15, b.bsp + dt*1500);
+    const step = Math.min(d, b.bsp*dt);
+    b.x += dx/d*step; b.y += dy/d*step;
+    if (d < 22) { b.dead = true; o.hasSickle = true; o.catchT = .3; o.squash = .3; o.vx += b.dx*40; o.vy += b.dy*40; sfxCatch(); rumble(o, 60, .15, .4); G.shake = Math.max(G.shake, 1.5); }
+  }
+  // cut along the path travelled this frame
+  const seg = Math.hypot(b.x-px, b.y-py), n = Math.max(1, Math.ceil(seg/8));
+  let cut = 0;
+  for (let k=1; k<=n; k++) cut += cutCircle(px + (b.x-px)*k/n, py + (b.y-py)*k/n, b.r);
+  if (cut) {
+    sfxCrunch(cut);
+    if (b.rt <= 0) { b.rt = .06; rumble(b.owner, 45, .04, .28); G.shake = Math.max(G.shake, 1.2); }  // feel the mowing in your hands
+  }
+  rustleAt(b.x, b.y, 50, dt*6);
+  b.trail.push([b.x, b.y]); if (b.trail.length > 10) b.trail.shift();
+  b.whirr -= dt; if (b.whirr <= 0) { b.whirr = .09; noise(.05, 1900, 1300, .035, 3); }
+  for (const q of G.players) {
+    if (q === b.owner || q.hitBy === b || q.dizzy > 0) continue;
+    if (Math.hypot(q.x-b.x, q.y-b.y) < 24) {
+      q.hitBy = b; q.dizzy = DIZZY; q.squash = .35; sfxBonk(); rumble(q, 220, .6, .6);
+      addText(q.x, q.y-56, 'bonk!', '#fff', 22);
+    }
+  }
+  scareDucks(b.x, b.y, 60);
+}
+
+// ---- sheaves, ducks, particles --------------------------------------------
+function updateSheaves(dt){
+  for (const s of G.sheaves) {
+    if (s.dead) continue;
+    s.t += dt;
+    if (!s.landed) {
+      s.vz -= 900*dt; s.z += s.vz*dt; s.x += s.vx*dt; s.y += s.vy*dt;
+      s.x = clamp(s.x, PADDY.x0+6, PADDY.x1-6); s.y = clamp(s.y, PADDY.y0+6, PADDY.y1-2);
+      if (s.z <= 0) { s.z = 0; if (s.vz < -140) { s.vz *= -.3; s.vx *= .5; s.vy *= .5; } else { s.landed = true; s.vz = 0; } }
+    }
+    if (s.t < .18 || s.z > 14) continue;
+    let best = null, bd = MAGNET_R;
+    for (const p of G.players) { const d = Math.hypot(p.x - s.x, p.y - s.y); if (d < bd) { bd = d; best = p; } }
+    if (!best) continue;
+    if (bd < PICK_R) { collect(best, s); continue; }
+    const k = Math.min(1, dt*9); s.x += (best.x - s.x)*k; s.y += (best.y - s.y)*k; s.z *= .8;
+  }
+  G.sheaves = G.sheaves.filter(s => !s.dead);
+}
+function collect(p, s){
+  s.dead = true;
+  const v = s.gold ? GOLD_VALUE : 1;
+  p.score += v; p.combo++; p.comboT = .5; p.squash = Math.max(p.squash, .08);
+  sfxPick(p.combo, s.gold);
+  if (s.gold) { addText(p.x, p.y-60, `+${GOLD_VALUE}`, '#ffe066', 26); rumble(p, 80, .2, .4); }
+}
+function newDuck(){
+  return {duck:true, x:rand(PADDY.x0+60, PADDY.x1-60), y:rand(PADDY.y0+60, PADDY.y1-40), tx:0, ty:0,
+          vx:0, vy:0, retarget:0, target:null, eat:0, face:1, waddle:Math.random()*6, quackT:rand(1,4)};
+}
+function scareDucks(x, y, r){
+  for (const d of G.ducks) if (Math.hypot(d.x-x, d.y-y) < r) { d.scare = .5; d.sx = x; d.sy = y; }
+}
+function updateDuck(d, dt){
+  d.retarget -= dt; d.quackT -= dt; d.scare = Math.max(0, (d.scare||0) - dt);
+  let near = null, nd = 1e9;
+  for (const p of G.players) { const dd = Math.hypot(p.x-d.x, p.y-d.y); if (dd < nd) { nd = dd; near = p; } }
+  let mvx = 0, mvy = 0, sp = 0; d.eating = false;
+  if (nd < 70 || d.scare > 0) {
+    const fx = d.scare > 0 ? d.sx : near.x, fy = d.scare > 0 ? d.sy : near.y;
+    const ax = d.x - fx, ay = d.y - fy, a = Math.hypot(ax, ay) || 1;
+    mvx = ax/a; mvy = ay/a; sp = 175; if (d.target) { d.target.claimed = false; d.target = null; } d.eat = 0;
+    if (d.quackT <= 0) { sfxQuack(); d.quackT = rand(1.5, 3.5); addText(d.x, d.y-30, 'quack', '#fff', 15); }
+  } else if (d.target) {
+    const s = d.target;
+    if (s.dead) { d.target = null; d.eat = 0; }
+    else {
+      const ax = s.x - d.x, ay = s.y - d.y, a = Math.hypot(ax, ay);
+      if (a > 9) { mvx = ax/a; mvy = ay/a; sp = 80; }
+      else if (s.landed) { d.eating = true; d.eat += dt; if (d.eat >= DUCK_EAT) { s.dead = true; d.target = null; d.eat = 0; addText(d.x, d.y-30, 'nom', '#fff', 15); tone(300, .08, 'triangle', .05, 200); } }
+    }
+  } else {
+    if (d.retarget <= 0) {
+      d.retarget = rand(2, 4.5);
+      let best = null, bd = 210;
+      for (const s of G.sheaves) { if (!s.landed || s.claimed) continue; const dd = Math.hypot(s.x-d.x, s.y-d.y); if (dd < bd) { bd = dd; best = s; } }
+      if (best) { d.target = best; best.claimed = true; }
+      else { d.tx = rand(PADDY.x0+30, PADDY.x1-30); d.ty = rand(PADDY.y0+30, PADDY.y1-20); }
+    }
+    const ax = d.tx - d.x, ay = d.ty - d.y, a = Math.hypot(ax, ay);
+    if (a > 8) { mvx = ax/a; mvy = ay/a; sp = 45; }
+  }
+  const k = 1 - Math.exp(-dt*6);
+  d.vx += (mvx*sp - d.vx)*k; d.vy += (mvy*sp - d.vy)*k;
+  d.x = clamp(d.x + d.vx*dt, PADDY.x0+10, PADDY.x1-10); d.y = clamp(d.y + d.vy*dt, PADDY.y0+14, PADDY.y1-6);
+  const spd = Math.hypot(d.vx, d.vy);
+  if (Math.abs(d.vx) > 8) d.face = d.vx > 0 ? 1 : -1;
+  d.waddle += spd*dt*.25;
+  if (spd > 15) rustleAt(d.x, d.y, 20, dt*8);
+}
+function addText(x, y, txt, col, size){ if (G.texts.length < 40) G.texts.push({x, y, txt, col, size, life:0}); }
+function toast(msg){ G.toast = {msg, t:0}; }
+
+// ---- bots (CPU players, also used by the test hook) ---------------------------
+function botThink(p, dt){
+  const a = p.ai || (p.ai = {mx:0, my:0, b:false, tx:p.x, ty:p.y, think:0, mode:'walk', hold:0, throwCD:rand(2,4), ax:1, ay:0});
+  a.think -= dt; a.throwCD -= dt;
+  if (a.mode === 'aim') {
+    a.hold -= dt; a.b = true; a.mx = a.ax*.3; a.my = a.ay*.3;
+    if (a.hold <= 0) { a.b = false; a.mode = 'walk'; a.throwCD = rand(3, 6); }
+    return;
+  }
+  if (a.think <= 0) {
+    a.think = rand(.25, .45);
+    let best = null, bd = 280*280;
+    for (const s of G.sheaves) { const d = (s.x-p.x)**2 + (s.y-p.y)**2; if (d < bd) { bd = d; best = s; } }
+    if (best) { a.tx = best.x; a.ty = best.y; }
+    else {
+      let bi = -1, bdd = 1e12;
+      const scanAll = tallCount < 120;   // near the end, sampling misses the last tufts
+      for (let k=0; k<(scanAll ? N : 80); k++) { const i = scanAll ? k : (Math.random()*N)|0; if (!TALL[i]) continue; const d = (TX[i]-p.x)**2 + (TY[i]-p.y)**2; if (d < bdd) { bdd = d; bi = i; } }
+      if (bi >= 0) { a.tx = TX[bi]; a.ty = TY[bi]; } else { a.tx = rand(PADDY.x0, PADDY.x1); a.ty = rand(PADDY.y0, PADDY.y1); }
+    }
+    if (p.hasSickle && a.throwCD <= 0) {
+      let dir = null, bestN = 0;
+      for (let k=0; k<8; k++) {
+        const ang = k*Math.PI/4 + rand(-.2,.2), dx = Math.cos(ang), dy = Math.sin(ang); let n = 0;
+        for (let s=40; s<=440; s+=40) if (tallNear(p.x+dx*s, p.y+dy*s, 22)) n++;
+        if (n > bestN) { bestN = n; dir = [dx, dy]; }
+      }
+      if (bestN >= 6) { a.mode = 'aim'; a.ax = dir[0]; a.ay = dir[1]; a.hold = HOLD_MIN + rand(.35, .9); a.b = false; return; }
+      a.throwCD = 1.5;
+    }
+  }
+  const dx = a.tx - p.x, dy = a.ty - p.y, d = Math.hypot(dx, dy);
+  if (d > 6) { a.mx = dx/d; a.my = dy/d; } else { a.mx = a.my = 0; }
+  a.b = p.hasSickle && p.cd <= 0 && !p.prev && tallNear(p.x + p.fx*10, p.y + p.fy*8, SLASH_R - 14);
+}
+
+// ---- input -------------------------------------------------------------------
+const keys = new Set();
+const KEYSETS = {
+  A: {u:'KeyW', d:'KeyS', l:'KeyA', r:'KeyD', b:['Space']},
+  B: {u:'ArrowUp', d:'ArrowDown', l:'ArrowLeft', r:'ArrowRight', b:['Enter','NumpadEnter','ShiftRight']},
+};
+const ACTION_BTNS = [0,1,2,3,4,5,6,7];
+addEventListener('keydown', e => {
+  unlockAudio(); wake();
+  if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Tab'].includes(e.code)) e.preventDefault();
+  if (e.repeat) return;
+  keys.add(e.code);
+  const c = e.code;
+  if (c === 'KeyF') toggleFullscreen();
+  else if (c === 'KeyG') startPressed();
+  else if (c === 'KeyP' || c === 'Escape') { if (G.state === 'play') pause(true); else if (G.state === 'paused') pause(false); }
+  else if (c === 'KeyC') addBot();
+  else if (c === 'KeyQ') { if (G.state === 'paused' || G.state === 'end') toLobby(); }
+  else if (c === 'KeyM') { muted = !muted; if (windGain) windGain.gain.value = muted ? 0 : .025; toast(muted ? 'Sound off (M)' : 'Sound on'); }
+  else if (G.state === 'lobby') {
+    for (const set of ['A','B']) if (KEYSETS[set].b.includes(c) && !G.players.some(p => p.input.type === 'key' && p.input.set === set)) join({type:'key', set});
+  }
+});
+addEventListener('keyup', e => keys.delete(e.code));
+addEventListener('blur', () => keys.clear());
+addEventListener('gamepadconnected', e => toast(`Controller ${e.gamepad.index+1} found: press A to join`));
+addEventListener('gamepaddisconnected', e => toast(`Controller ${e.gamepad.index+1} disconnected`));
+
+const padPrev = {};
+function pollPads(){
+  let pads = [];
+  try { pads = navigator.getGamepads ? navigator.getGamepads() : []; } catch(e) {}
+  G.padsSeen = [];
+  for (const pad of pads) {
+    if (!pad) continue;
+    G.padsSeen.push(pad);
+    const prev = padPrev[pad.index] || [];
+    const now = pad.buttons.map(b => b.pressed || b.value > .5);
+    const edge = i => now[i] && !prev[i];
+    const owner = G.players.find(p => p.input.type === 'pad' && p.input.index === pad.index);
+    if (now.some((v,i) => v && !prev[i])) wake();
+    if (edge(9)) startPressed();
+    if (edge(8)) backPressed();
+    if (!owner && G.state === 'lobby' && ACTION_BTNS.some(edge)) {
+      const p = join({type:'pad', index:pad.index, id:pad.id});
+      if (p) p.prev = true;   // the join press is not also a swing
+    }
+    padPrev[pad.index] = now;
+  }
+  return pads;
+}
+function readInput(p, pads, dt){
+  const inp = p.input; let mx = 0, my = 0, b = false;
+  if (inp.type === 'pad') {
+    const pad = pads[inp.index];
+    p.connected = !!(pad && pad.connected);
+    if (pad) {
+      let ax = pad.axes[0] || 0, ay = pad.axes[1] || 0; const m = Math.hypot(ax, ay);
+      if (m < .22) { ax = ay = 0; } else { const k = Math.min(1, (m-.22)/.68)/m; ax *= k; ay *= k; }
+      const B = i => pad.buttons[i] && (pad.buttons[i].pressed || pad.buttons[i].value > .5);
+      if (B(14)) ax = -1; if (B(15)) ax = 1; if (B(12)) ay = -1; if (B(13)) ay = 1;
+      mx = ax; my = ay; b = ACTION_BTNS.some(B);
+    }
+  } else if (inp.type === 'key') {
+    const s = KEYSETS[inp.set];
+    mx = (keys.has(s.r)?1:0) - (keys.has(s.l)?1:0); my = (keys.has(s.d)?1:0) - (keys.has(s.u)?1:0);
+    b = s.b.some(k => keys.has(k));
+  } else { botThink(p, dt); mx = p.ai.mx; my = p.ai.my; b = p.ai.b; }
+  const m = Math.hypot(mx, my); if (m > 1) { mx /= m; my /= m; }
+  p.mx = mx; p.my = my; p.btn = b;
+}
+function rumble(p, ms, strong, weak){
+  if (p.input.type !== 'pad') return;
+  try {
+    const pad = navigator.getGamepads()[p.input.index], va = pad && pad.vibrationActuator;
+    if (va && va.playEffect) va.playEffect('dual-rumble', {duration:ms, strongMagnitude:strong, weakMagnitude:weak}).catch(()=>{});
+  } catch(e) {}
+}
+
+// ---- game flow -----------------------------------------------------------------
+function startPressed(){
+  if (G.state === 'lobby') { if (!G.players.length) { toast('Press A on a controller to join first'); return; } beginRound(); }
+  else if (G.state === 'play') pause(true);
+  else if (G.state === 'paused') pause(false);
+  else if (G.state === 'end' && G.endT > 1.2) beginRound();
+}
+function backPressed(){
+  if (G.state === 'lobby') addBot();
+  else if (G.state === 'paused' || (G.state === 'end' && G.endT > 1.2)) toLobby();
+}
+function addBot(){
+  if (G.state !== 'lobby') return;
+  if (G.players.length < 4) join({type:'bot'});
+  else if (G.players.some(p => p.input.type === 'bot')) { G.players = G.players.filter(p => p.input.type !== 'bot'); toast('CPUs removed'); }
+}
+function resetWorld(){
+  resetField(); G.sheaves = []; G.booms = []; G.parts = []; G.texts = []; G.falls = []; G.hitstop = 0; G.shake = 0;
+  G.ducks = Array.from({length:DUCKS}, newDuck);
+  placePlayers();
+}
+function beginRound(){
+  resetWorld(); G.state = 'count'; G.countT = 0; G.clock = 0; G.cleared = false; G.lastBeep = -1;
+}
+function toLobby(){ resetWorld(); G.state = 'lobby'; }
+function pause(on){ if (on && G.state === 'play') { G.state = 'paused'; tone(440, .1, 'triangle', .08); } else if (!on && G.state === 'paused') G.state = 'play'; }
+function endRound(cleared){
+  G.state = 'end'; G.endT = 0; G.cleared = !!cleared;
+  for (const b of G.booms) b.owner.hasSickle = true;
+  G.booms = [];
+  const top = Math.max(...G.players.map(p => p.score));
+  for (const p of G.players) if (p.score === top) rumble(p, 400, .5, .5);
+  const humanTop = Math.max(0, ...G.players.filter(p => p.input.type !== 'bot').map(p => p.score));
+  if (humanTop > G.best) { G.best = humanTop; G.newBest = true; try { localStorage.setItem('harvestRaceBest', humanTop); } catch(e) {} } else G.newBest = false;
+  sfxFanfare();
+}
+
+function update(dt){
+  G.t += dt;
+  const pads = pollPads();
+  if (G.toast) { G.toast.t += dt; if (G.toast.t > 2.6) G.toast = null; }
+  if (G.state === 'paused') return;
+  G.shake *= Math.exp(-dt*16);
+  if (G.hitstop > 0) {   // freeze a beat on a big cut, but still catch presses so none are lost
+    G.hitstop -= dt;
+    for (const p of G.players) {
+      if (p.input.type === 'bot') continue;
+      readInput(p, pads, dt);
+      if (p.btn && !p.prev && p.hasSickle) { p.buffer = .25; p.holding = true; p.holdT = 0; }
+      p.prev = p.btn;
+    }
+    return;
+  }
+  for (const f of G.falls) f.life += dt*f.spd;
+  G.falls = G.falls.filter(f => f.life < .5);
+  const canAct = G.state === 'lobby' || G.state === 'play';
+  for (const p of G.players) { readInput(p, pads, dt); updatePlayer(p, dt, canAct); }
+  for (let i=0; i<G.players.length; i++) for (let j=i+1; j<G.players.length; j++) {
+    const a = G.players[i], b = G.players[j], dx = b.x-a.x, dy = b.y-a.y, d = Math.hypot(dx,dy);
+    if (d > 0 && d < 26) { const push = (26-d)/2; a.x -= dx/d*push; a.y -= dy/d*push; b.x += dx/d*push; b.y += dy/d*push; }
+  }
+  for (const b of G.booms) updateBoom(b, dt);
+  G.booms = G.booms.filter(b => !b.dead);
+  updateSheaves(dt);
+  for (const d of G.ducks) updateDuck(d, dt);
+  for (const q of G.parts) { q.life += dt; q.vz -= 600*dt; q.z = Math.max(0, q.z + q.vz*dt); q.x += q.vx*dt; q.y += q.vy*dt; q.vx *= .96; q.vy *= .96; }
+  G.parts = G.parts.filter(q => q.life < q.max);
+  for (const t of G.texts) t.life += dt;
+  G.texts = G.texts.filter(t => t.life < 1);
+  const decay = Math.exp(-dt*4);
+  for (let i=0; i<N; i++) if (RUST[i] > .001) RUST[i] *= decay;
+  const g = G.gust;
+  if (!g.on) { g.next -= dt; if (g.next <= 0) { g.on = true; g.x = -160; gustSound(); } }
+  else { g.x += 420*dt; if (g.x > W+160) { g.on = false; g.next = rand(5, 11); } }
+
+  if (G.state === 'lobby') {
+    if (tallCount < N*.45 && !G.booms.length) { resetField(); G.sheaves = []; toast('The rice grew back'); }
+  } else if (G.state === 'count') {
+    G.countT += dt;
+    const n = Math.floor(G.countT/(COUNT/3));
+    if (n !== G.lastBeep && n < 3) { G.lastBeep = n; tone(660, .12, 'triangle', .14); }
+    if (G.countT >= COUNT) { G.state = 'play'; G.goT = 0; tone(990, .35, 'triangle', .16); tone(1320, .35, 'sine', .08, null, .05); }
+  } else if (G.state === 'play') {
+    G.clock += dt; G.goT += dt;
+    const left = Math.ceil(ROUND - G.clock);
+    if (left <= 5 && left !== G.lastBeep && left > 0) { G.lastBeep = left; tone(880, .1, 'triangle', .12); }
+    if (G.clock >= ROUND) endRound(false);
+    else if (tallCount === 0 && !G.sheaves.length && !G.booms.length) endRound(true);
+  } else if (G.state === 'end') G.endT += dt;
+}
+
+// ---- drawing ---------------------------------------------------------------------
+let DPR = 1, S = 1, SC = 1, OX = 0, OY = 0, OX0 = 0, OY0 = 0;   // OX/OY include the screen shake; OX0/OY0 don't
+function resize(){
+  const iw = innerWidth, ih = innerHeight; if (!iw || !ih) return;
+  DPR = Math.min(2, devicePixelRatio || 1);
+  cv.width = Math.round(iw*DPR); cv.height = Math.round(ih*DPR);
+  S = Math.min(iw/W, ih/H); SC = S*DPR; OX = OX0 = (iw - W*S)/2*DPR; OY = OY0 = (ih - H*S)/2*DPR;
+}
+const base = () => ctx.setTransform(SC, 0, 0, SC, OX, OY);
+function txt(s, x, y, size, col='#fff', align='center', ow=0, weight=800){
+  ctx.font = `${weight} ${size}px ${FONT}`; ctx.textAlign = align; ctx.textBaseline = 'middle';
+  if (ow) { ctx.lineJoin = 'round'; ctx.lineWidth = ow; ctx.strokeStyle = 'rgba(45,28,16,.9)'; ctx.strokeText(s, x, y); }
+  ctx.fillStyle = col; ctx.fillText(s, x, y);
+}
+function hex(h){ const n = parseInt(h.slice(1), 16); return [n>>16, (n>>8)&255, n&255]; }
+function mix(a, b, t){ const A = hex(a), B = hex(b); return `rgb(${A.map((v,i) => Math.round(v + (B[i]-v)*t)).join(',')})`; }
+const SKY = [[0,'#a9d8ef','#f6e8c4'], [.55,'#8fcbed','#e6f0d4'], [.8,'#f0b36a','#f8dc9c'], [1,'#4b3f78','#d98a6a']];
+function skyAt(f, k){
+  for (let i=1; i<SKY.length; i++) if (f <= SKY[i][0]) { const a = SKY[i-1], b = SKY[i], t = (f-a[0])/(b[0]-a[0]); return mix(a[k], b[k], t); }
+  return SKY[SKY.length-1][k];
+}
+function dayFrac(){ return G.state === 'lobby' || G.state === 'count' ? .2 : clamp(G.clock/ROUND, 0, 1); }
+function drawSky(f){
+  base();
+  const gr = ctx.createLinearGradient(0, 0, 0, SKY_H);
+  gr.addColorStop(0, skyAt(f,1)); gr.addColorStop(1, skyAt(f,2));
+  ctx.fillStyle = gr; ctx.fillRect(0, 0, W, SKY_H+2);
+  const sx = 60 + f*1160, sy = 100 - Math.sin(f*Math.PI)*72;
+  const sun = mix('#fff4c2', '#ff8a3d', clamp((f-.6)/.4, 0, 1));
+  ctx.fillStyle = sun; ctx.globalAlpha = .35; ctx.beginPath(); ctx.arc(sx, sy, 30, 0, 7); ctx.fill();
+  ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(sx, sy, 18, 0, 7); ctx.fill();
+  HILLS.forEach((pts, L) => {
+    ctx.fillStyle = mix(L ? '#6f9a5a' : '#94b583', '#3d3a5c', clamp((f-.75)/.25, 0, 1)*.7);
+    ctx.beginPath(); ctx.moveTo(-10, SKY_H+2); for (const [x,y] of pts) ctx.lineTo(x, y); ctx.lineTo(W+60, SKY_H+2); ctx.closePath(); ctx.fill();
+  });
+}
+function onigiri(c, w, h){
+  c.beginPath();
+  c.moveTo(-w*.12, -h*.94); c.quadraticCurveTo(0, -h*1.04, w*.12, -h*.94);
+  c.quadraticCurveTo(w*.5, -h*.4, w*.48, -h*.14); c.quadraticCurveTo(w*.46, 0, w*.3, 0);
+  c.lineTo(-w*.3, 0); c.quadraticCurveTo(-w*.46, 0, -w*.48, -h*.14);
+  c.quadraticCurveTo(-w*.5, -h*.4, -w*.12, -h*.94); c.closePath();
+}
+function drawRiceBody(col, lx, ly, dizzy, happy){
+  onigiri(ctx, 34, 34); ctx.fillStyle = '#fffaf0'; ctx.fill();
+  ctx.save(); onigiri(ctx, 34, 34); ctx.clip();
+  ctx.fillStyle = col.c; ctx.fillRect(-20, -37, 40, 12);
+  ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(-20, -27, 40, 2);
+  ctx.fillStyle = '#24342a'; rr(ctx, -8, -8, 16, 9, 2); ctx.fill();
+  ctx.restore();
+  onigiri(ctx, 34, 34); ctx.strokeStyle = '#3a2b24'; ctx.lineWidth = 2.4; ctx.stroke();
+  ctx.fillStyle = 'rgba(255,140,140,.55)';
+  ctx.beginPath(); ctx.ellipse(-10+lx*.5, -12, 3.2, 2, 0, 0, 7); ctx.ellipse(10+lx*.5, -12, 3.2, 2, 0, 0, 7); ctx.fill();
+  ctx.strokeStyle = ctx.fillStyle = '#2a1f1a'; ctx.lineWidth = 1.8; ctx.lineCap = 'round';
+  if (dizzy) {
+    for (const ex of [-6, 6]) { ctx.beginPath(); ctx.moveTo(ex-2.5+lx, -19); ctx.lineTo(ex+2.5+lx, -14); ctx.moveTo(ex+2.5+lx, -19); ctx.lineTo(ex-2.5+lx, -14); ctx.stroke(); }
+  } else if (happy) {
+    for (const ex of [-6, 6]) { ctx.beginPath(); ctx.arc(ex+lx, -15.5+ly, 2.6, Math.PI*1.1, Math.PI*1.9); ctx.stroke(); }
+  } else {
+    ctx.beginPath(); ctx.arc(-6+lx, -16+ly, 2.3, 0, 7); ctx.arc(6+lx, -16+ly, 2.3, 0, 7); ctx.fill();
+  }
+  ctx.beginPath(); ctx.arc(lx, -12+ly, 2.6, .15*Math.PI, .85*Math.PI); ctx.stroke();
+}
+function drawSickle(x, y, ang, s){
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang); ctx.scale(s, s); ctx.lineCap = 'round';
+  ctx.strokeStyle = '#6b4022'; ctx.lineWidth = 3.6; ctx.beginPath(); ctx.moveTo(0, 3); ctx.lineTo(0, 13); ctx.stroke();
+  ctx.strokeStyle = '#3a3f46'; ctx.lineWidth = 5.2; ctx.beginPath(); ctx.arc(6, 0, 7, Math.PI, Math.PI*2.15); ctx.stroke();
+  ctx.strokeStyle = '#e8edf2'; ctx.lineWidth = 2.8; ctx.beginPath(); ctx.arc(6, 0, 7, Math.PI, Math.PI*2.15); ctx.stroke();
+  ctx.restore();
+}
+function drawPlayer(p){
+  base(); ctx.translate(p.x, p.y);
+  ctx.fillStyle = 'rgba(30,20,5,.3)'; ctx.beginPath(); ctx.ellipse(0, 0, 15, 5, 0, 0, 7); ctx.fill();
+  const moving = Math.hypot(p.vx, p.vy) > 20;
+  let bob = moving ? Math.abs(Math.sin(p.walk*Math.PI))*4 : 0;
+  if (p.hop > 0) bob += Math.sin(Math.PI*(1 - p.hop/.2))*10;
+  let sx = 1 + p.squash*.6, sy = 1 - p.squash*.6;
+  const ch = p.charging ? clamp((p.holdT-HOLD_MIN)/CHARGE_T, 0, 1) : 0;
+  sx += ch*.12; sy -= ch*.12;
+  if (p.full) { const w = Math.sin(G.t*50)*.03; sx += w; sy -= w; }
+  ctx.save(); ctx.translate(0, -bob); ctx.scale(sx, sy);
+  const spinning = p.slashT > 0 && p.swing === 2;
+  if (p.dizzy > 0) ctx.rotate(Math.sin(G.t*30)*.15);
+  else {
+    let rot = p.lean + (moving ? Math.sin(p.walk*Math.PI*2)*.05 : 0) + (p.skid > 0 ? -Math.sign(p.vx || 1)*.18 : 0);
+    if (p.catchT > 0) rot += (1 - p.catchT/.3)*Math.PI*2*(p.fx >= 0 ? 1 : -1);   // twirl on the catch
+    ctx.translate(0, -16); ctx.rotate(rot); ctx.translate(0, 16);
+  }
+  // the spin swing turns you all the way around (squash the width to fake a 3D turn)
+  if (spinning) { const c = Math.cos((1 - p.slashT/p.slashDur)*Math.PI*2); ctx.scale((c < 0 ? -1 : 1)*Math.max(.2, Math.abs(c)), 1); }
+  const side = p.fx >= 0 ? 1 : -1;
+  // headscarf tails, behind the body
+  ctx.strokeStyle = p.col.d; ctx.lineWidth = 3.4; ctx.lineCap = 'round';
+  const fl = Math.sin(G.t*12 + p.slot)*3;
+  ctx.beginPath(); ctx.moveTo(-side*12, -31); ctx.quadraticCurveTo(-side*20, -33+fl, -side*24, -28+fl); ctx.stroke();
+  drawRiceBody(p.col, p.fx*3, p.fy*2, p.dizzy > 0, p.catchT > 0 || (p.comboT > 0 && p.combo > 4));
+  ctx.restore();
+  if (p.hasSickle) {
+    if (p.charging) drawSickle(side*8, -40 - ch*4 - bob, -side*.6 + Math.sin(G.t*40)*.15*ch, 1.1);
+    else if (p.slashT > 0) {
+      // blade sweeps around the body: swing 0 one way, swing 1 back, swing 2 a full turn
+      const k = 1 - p.slashT/p.slashDur, ease = 1 - (1-k)**3, a0 = Math.atan2(p.fy, p.fx);
+      const a = p.swing === 2 ? a0 + ease*Math.PI*2 : p.swing === 1 ? a0 + 1.4 - ease*2.8 : a0 - 1.4 + ease*2.8;
+      drawSickle(Math.cos(a)*24, -12 - bob + Math.sin(a)*14, a + Math.PI/2, 1.15);
+    }
+    else drawSickle(side*17, -14 - bob, side*.3, 1);
+  }
+  if (p.slashT > 0) {
+    // the swoosh: a thick crescent that trails the blade
+    const k = 1 - p.slashT/p.slashDur, ease = 1 - (1-k)**3, a0 = Math.atan2(p.fy, p.fx);
+    const R = p.swing === 2 ? SLASH_R*1.35 : SLASH_R;
+    let from, to;
+    if (p.swing === 2) { from = a0 + Math.max(0, ease - .55)*Math.PI*2; to = a0 + ease*Math.PI*2; }
+    else if (p.swing === 1) { to = a0 + 1.4 - Math.max(0, ease - .45)*2.8; from = a0 + 1.4 - ease*2.8; }
+    else { from = a0 - 1.4 + Math.max(0, ease - .45)*2.8; to = a0 - 1.4 + ease*2.8; }
+    const cx = p.swing === 2 ? 0 : p.fx*12, cy = (p.swing === 2 ? 0 : p.fy*9) - 8;
+    ctx.save(); ctx.translate(cx, cy); ctx.scale(1, .62);
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = `rgba(255,255,235,${.85*(1-k*k)})`; ctx.lineWidth = 12;
+    ctx.beginPath(); ctx.arc(0, 0, R*.82, from, to); ctx.stroke();
+    ctx.strokeStyle = `rgba(255,255,255,${1-k})`; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(0, 0, R*.95, from, to); ctx.stroke();
+    ctx.restore();
+  }
+}
+function drawDuck(d){
+  base(); ctx.translate(d.x, d.y);
+  ctx.fillStyle = 'rgba(30,20,5,.25)'; ctx.beginPath(); ctx.ellipse(0, 0, 12, 4, 0, 0, 7); ctx.fill();
+  ctx.rotate(Math.sin(d.waddle)*.12); ctx.scale(d.face, 1);
+  ctx.strokeStyle = '#4a3c30'; ctx.lineWidth = 1.6;
+  ctx.fillStyle = '#fbf8f0';
+  ctx.beginPath(); ctx.moveTo(-10, -9); ctx.lineTo(-16, -15); ctx.lineTo(-9, -13); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(0, -8, 11, 7, 0, 0, 7); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#e4ddd0'; ctx.beginPath(); ctx.ellipse(-2, -9, 6, 3.5, -.2, 0, 7); ctx.fill();
+  const hy = d.eating ? -7 + Math.sin(G.t*18)*1.5 : -16, hx = d.eating ? 11 : 8;
+  ctx.fillStyle = '#fbf8f0'; ctx.beginPath(); ctx.arc(hx, hy, 5.5, 0, 7); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#f08a24'; ctx.beginPath(); ctx.ellipse(hx+5.5, hy+1, 3.6, 1.9, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#2a1f1a'; ctx.beginPath(); ctx.arc(hx+2, hy-1, 1.2, 0, 7); ctx.fill();
+}
+function drawSheaf(s){
+  base();
+  const sc = s.gold ? 1.25 : 1.1;
+  ctx.fillStyle = 'rgba(30,20,5,.25)'; ctx.beginPath(); ctx.ellipse(s.x, s.y, 7, 2.5, 0, 0, 7); ctx.fill();
+  if (s.gold) {
+    const a = .35 + .2*Math.sin(G.t*6 + s.x);
+    ctx.fillStyle = `rgba(255,230,120,${a})`; ctx.beginPath(); ctx.arc(s.x, s.y - s.z - 10, 14, 0, 7); ctx.fill();
+  }
+  ctx.drawImage(s.gold ? SHEAF_GOLD : SHEAF, s.x - 8*sc, s.y - s.z - 19*sc, 16*sc, 20*sc);
+}
+function gustAt(x){ const g = G.gust; return g.on ? .26*Math.exp(-(((x-g.x)/80)**2)) : 0; }
+function drawTuft(i, t){
+  const sway = .06*Math.sin(t*1.3 + TX[i]*.012 + TY[i]*.006) + gustAt(TX[i]) + RUST[i]*.42*Math.sin(t*26 + PH[i]);
+  ctx.setTransform(SC, 0, SC*sway, SC, OX + SC*TX[i], OY + SC*TY[i]);
+  ctx.drawImage(GOLD[i] ? GOLDS[VAR[i]&1] : TUFTS[VAR[i]], -SPR_AX, -SPR_AY, SPR_W, SPR_H);
+  if (GOLD[i] && Math.sin(t*3 + PH[i]*5) > .9) {
+    ctx.fillStyle = '#fffbe0'; ctx.beginPath();
+    const sx = 4, sy = -50;
+    ctx.moveTo(sx, sy-6); ctx.lineTo(sx+1.5, sy-1.5); ctx.lineTo(sx+6, sy); ctx.lineTo(sx+1.5, sy+1.5);
+    ctx.lineTo(sx, sy+6); ctx.lineTo(sx-1.5, sy+1.5); ctx.lineTo(sx-6, sy); ctx.lineTo(sx-1.5, sy-1.5); ctx.fill();
+  }
+}
+function drawBoom(b){
+  base();
+  const o = b.owner;
+  ctx.strokeStyle = o.col.c; ctx.lineCap = 'round';
+  for (let k=1; k<b.trail.length; k++) {
+    ctx.globalAlpha = k/b.trail.length*.5; ctx.lineWidth = 2 + k*.6;
+    ctx.beginPath(); ctx.moveTo(b.trail[k-1][0], b.trail[k-1][1]-18); ctx.lineTo(b.trail[k][0], b.trail[k][1]-18); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = 'rgba(30,20,5,.25)'; ctx.beginPath(); ctx.ellipse(b.x, b.y, 10, 3.5, 0, 0, 7); ctx.fill();
+  // blur disc so the spin reads at speed
+  ctx.fillStyle = b.full ? 'rgba(255,240,170,.35)' : 'rgba(255,255,255,.22)';
+  ctx.beginPath(); ctx.ellipse(b.x, b.y-18, b.r*.9, b.r*.55, 0, 0, 7); ctx.fill();
+  drawSickle(b.x, b.y-18, b.spin, b.full ? 1.9 : 1.6);
+}
+function drawAim(p){
+  const ch = clamp((p.holdT-HOLD_MIN)/CHARGE_T, 0, 1), dist = THROW_MIN + (THROW_MAX-THROW_MIN)*ch;
+  base();
+  const ex = clamp(p.x + p.fx*dist, BUND.x0, BUND.x1), ey = clamp(p.y + p.fy*dist, BUND.y0, BUND.y1);
+  ctx.setLineDash([8, 10]); ctx.lineDashOffset = -G.t*40;
+  ctx.strokeStyle = p.col.c; ctx.lineWidth = 4; ctx.globalAlpha = .85;
+  ctx.beginPath(); ctx.moveTo(p.x, p.y-6); ctx.lineTo(ex, ey); ctx.stroke();
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+  ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.beginPath(); ctx.arc(ex, ey, BOOM_R*(ch >= 1 ? 1.1 + Math.sin(G.t*20)*.1 : 1), 0, 7); ctx.stroke();
+}
+function drawMarker(p){
+  base();
+  const bob = Math.sin(G.t*4 + p.slot)*2;
+  const y = p.y - 50 + bob - (p.inRice ? 6 : 0), x = p.x;
+  const s = p.inRice ? 1.25 : 1;
+  ctx.fillStyle = p.connected ? p.col.c : '#999'; ctx.strokeStyle = '#2d1c10'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x - 9*s, y - 9*s); ctx.lineTo(x + 9*s, y - 9*s); ctx.lineTo(x, y + 2*s); ctx.closePath(); ctx.fill(); ctx.stroke();
+  txt(p.connected ? `P${p.slot+1}` : `P${p.slot+1}?`, x, y - 20*s, 15*s, '#fff', 'center', 4);
+  if (!p.connected) txt('controller off', x, y - 36, 12, '#ffd2c8', 'center', 3, 700);
+}
+function drawHUD(){
+  base();
+  const xs = [20, 222, W-20-190-202, W-20-190];
+  for (const p of G.players) {
+    const x = xs[p.slot], y = 14;
+    ctx.fillStyle = 'rgba(255,250,240,.92)'; rr(ctx, x, y, 190, 66, 16); ctx.fill();
+    ctx.fillStyle = p.col.c; rr(ctx, x, y, 10, 66, [16,0,0,16]); ctx.fill();
+    ctx.save(); ctx.translate(x+40, y+52); ctx.scale(.95, .95); drawRiceBody(p.col, 0, 0, p.dizzy > 0, p.comboT > 0 && p.combo > 4); ctx.restore();
+    txt(`P${p.slot+1}`, x+68, y+20, 15, p.col.d, 'left', 0, 800);
+    txt(p.input.type === 'bot' ? 'CPU' : p.input.type === 'key' ? 'keys' : '🎮', x+68, y+44, 13, '#7a6650', 'left', 0, 700);
+    txt(String(p.score), x+178, y+35, 38, '#3a2b24', 'right', 0, 900);
+  }
+  if (G.state === 'play' || G.state === 'paused' || G.state === 'end') {
+    const left = Math.max(0, ROUND - G.clock), m = Math.floor(Math.ceil(left)/60), s = Math.ceil(left) % 60;
+    txt(`${m}:${String(s).padStart(2,'0')}`, W/2, 36, 34, left <= 10 ? '#fff0c0' : '#fff', 'center', 6, 900);
+    txt('until sunset', W/2, 64, 14, '#fff', 'center', 4, 700);
+  } else {
+    txt('practice field', W/2, 40, 22, '#fff', 'center', 5, 800);
+  }
+}
+function panel(x, y, w, h){ base(); ctx.fillStyle = 'rgba(40,26,16,.8)'; rr(ctx, x, y, w, h, 24); ctx.fill(); }
+function drawLobby(){
+  const x = 250, y = 168, w = 780, h = 420;
+  panel(x, y, w, h);
+  txt('Harvest Race', W/2, y+58, 60, '#ffe7a0', 'center', 0, 900);
+  txt('Cut the rice. Walk over the sheaves to grab them. Most rice by sunset wins.', W/2, y+108, 20, '#fff3dc', 'center', 0, 700);
+  for (let s=0; s<4; s++) {
+    const cx = x + 40 + s*180, cy = y + 140, p = G.players.find(q => q.slot === s);
+    if (p) {
+      ctx.fillStyle = p.col.c; rr(ctx, cx, cy, 160, 96, 16); ctx.fill();
+      ctx.save(); ctx.translate(cx+34, cy+76); drawRiceBody(p.col, 0, 0, false, true); ctx.restore();
+      txt(`P${s+1}`, cx+64, cy+30, 24, '#fff', 'left', 0, 900);
+      txt(p.col.n, cx+64, cy+54, 15, '#fff', 'left', 0, 700);
+      txt(deviceLabel(p), cx+80, cy+80, 12, '#fff', 'center', 0, 700);
+    } else {
+      ctx.setLineDash([7, 7]); ctx.strokeStyle = 'rgba(255,240,210,.6)'; ctx.lineWidth = 2.5;
+      rr(ctx, cx+2, cy+2, 156, 92, 14); ctx.stroke(); ctx.setLineDash([]);
+      txt(`P${s+1}`, cx+80, cy+32, 20, COLORS[s].c, 'center', 0, 900);
+      txt('press A to join', cx+80, cy+62, 15, 'rgba(255,240,210,.85)', 'center', 0, 700);
+    }
+  }
+  const L = [
+    'Tap A: swing. Three quick taps: a spin.',
+    'Hold A, let go: throw the sickle, it flies back. Wait for the ding for a big throw. Tap: call it back.',
+    'Tall rice is slow to wade through, so cut paths to run on. Ducks eat rice left lying around.',
+  ];
+  L.forEach((l, i) => txt(l, W/2, y+258 + i*24, 16, '#fff3dc', 'center', 0, 600));
+  txt(G.players.length ? 'Press Start (or G) to begin the day' : 'Press A on each controller to join', W/2, y+338, 24, '#ffe7a0', 'center', 0, 900);
+  txt('View button or C: add a CPU      F: full screen      M: sound      keyboard: WASD + Space, arrows + Enter', W/2, y+370, 13, 'rgba(255,240,210,.75)', 'center', 0, 600);
+  // diagnostics: what the browser can see
+  let diag;
+  if (!navigator.getGamepads) diag = 'This browser has no gamepad support.';
+  else if (!G.padsSeen.length) diag = 'No controllers seen yet: press a button on each one (Chrome only lists a controller after a press).';
+  else diag = 'Controllers seen: ' + G.padsSeen.map(p => `${p.index+1}. ${p.id.replace(/\(.*?\)/g,'').trim().slice(0,28)}${p.mapping === 'standard' ? '' : ' (non-standard mapping)'}`).join('   ');
+  txt(diag, W/2, y+398, 12, 'rgba(200,235,200,.85)', 'center', 0, 600);
+  if (!AC || AC.state !== 'running') txt('Sound starts after a click or a key press on this computer.', W/2, y+h+18, 13, '#fff', 'center', 4, 700);
+}
+function drawEnd(){
+  const k = clamp(G.endT/.6, 0, 1);
+  base(); ctx.fillStyle = `rgba(20,14,30,${.35*k})`; ctx.fillRect(0, SKY_H, W, H-SKY_H);
+  if (G.endT < .6) return;
+  const ranked = [...G.players].sort((a, b) => b.score - a.score);
+  const w = 560, h = 150 + ranked.length*70, x = (W-w)/2, y = 150;
+  panel(x, y, w, h);
+  txt(G.cleared ? 'Field cleared!' : 'Sunset!', W/2, y+50, 48, '#ffe7a0', 'center', 0, 900);
+  const top = ranked[0].score, max = Math.max(1, top);
+  ranked.forEach((p, i) => {
+    const ry = y + 100 + i*70;
+    ctx.fillStyle = 'rgba(255,250,240,.1)'; rr(ctx, x+24, ry, w-48, 60, 14); ctx.fill();
+    ctx.fillStyle = p.col.c; rr(ctx, x+24, ry, (w-48)*clamp((G.endT-.6)/1, 0, 1)*p.score/max, 60, 14); ctx.globalAlpha = .45; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.save(); ctx.translate(x+64, ry+50); drawRiceBody(p.col, 0, 0, false, p.score === top); ctx.restore();
+    if (p.score === top) txt('👑', x+64, ry+6, 22, '#fff', 'center');
+    txt(`P${p.slot+1} ${p.col.n}${p.input.type === 'bot' ? ' (CPU)' : ''}`, x+100, ry+30, 22, '#fff', 'left', 0, 800);
+    txt(String(p.score), x+w-44, ry+30, 34, '#fff', 'right', 0, 900);
+  });
+  const fy = y + h - 30;
+  txt(`${G.newBest ? 'New best: ' : 'Best: '}${G.best}      Start: again      View or Q: lobby`, W/2, fy, 16, 'rgba(255,240,210,.85)', 'center', 0, 700);
+}
+function draw(){
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  OX = OX0 + (Math.random() - .5)*2*G.shake*SC; OY = OY0 + (Math.random() - .5)*2*G.shake*SC;
+  const f = dayFrac();
+  ctx.fillStyle = '#6f8d3c'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = skyAt(f, 1); ctx.fillRect(0, 0, cv.width, OY + 2);
+  base(); ctx.drawImage(BG, 0, 0, W, H);
+  drawSky(f);
+  for (const s of G.sheaves) drawSheaf(s);
+  // cut tufts toppling over
+  for (const fl of G.falls) {
+    const k = fl.life/.5, ang = fl.dir*Math.min(1.45, k*k*3.2), c = Math.cos(ang), s = Math.sin(ang);
+    ctx.globalAlpha = 1 - k*k;
+    ctx.setTransform(SC*c, SC*s, -SC*s, SC*c, OX + SC*fl.x, OY + SC*fl.y);
+    ctx.drawImage(fl.spr, -SPR_AX, -SPR_AY, SPR_W, SPR_H);
+  }
+  ctx.globalAlpha = 1;
+  // depth-sorted pass: rice rows in front of you hide you
+  const ents = [...G.players, ...G.ducks].sort((a, b) => a.y - b.y);
+  let ei = 0; const t = G.t;
+  for (let r=0; r<ROWS; r++) {
+    const rowY = Y0 + r*ROWH;
+    while (ei < ents.length && ents[ei].y < rowY) { const e = ents[ei++]; e.duck ? drawDuck(e) : drawPlayer(e); }
+    for (let c=0; c<COLS; c++) { const i = r*COLS + c; if (TALL[i]) drawTuft(i, t); }
+  }
+  while (ei < ents.length) { const e = ents[ei++]; e.duck ? drawDuck(e) : drawPlayer(e); }
+  base();
+  for (const q of G.parts) {
+    const k = q.life/q.max; ctx.fillStyle = q.c;
+    if (q.dust) { ctx.globalAlpha = .55*(1-k); ctx.beginPath(); ctx.arc(q.x, q.y - q.z, 2.5 + k*7, 0, 7); ctx.fill(); }
+    else { ctx.globalAlpha = 1 - k; ctx.fillRect(q.x-1.5, q.y-q.z-1, 3, 2); }
+  }
+  ctx.globalAlpha = 1;
+  for (const b of G.booms) drawBoom(b);
+  for (const p of G.players) if (p.charging && p.hasSickle) drawAim(p);
+  // evening light
+  if (f > .6) {
+    base();
+    const warm = clamp((f-.6)/.2, 0, 1)*(1 - clamp((f-.85)/.15, 0, 1));
+    if (warm > 0) { ctx.fillStyle = `rgba(255,150,60,${.12*warm})`; ctx.fillRect(0, SKY_H, W, H-SKY_H); }
+    const dusk = clamp((f-.8)/.2, 0, 1);
+    if (dusk > 0) {
+      ctx.fillStyle = `rgba(40,30,90,${.34*dusk})`; ctx.fillRect(0, SKY_H, W, H-SKY_H);
+      for (let k=0; k<26; k++) {
+        const fx = (k*173.3 + Math.sin(t*.4 + k)*60) % W, fy = SKY_H + 40 + ((k*97.1 + Math.cos(t*.5 + k*2)*40) % (H-SKY_H-60));
+        ctx.fillStyle = `rgba(255,250,170,${dusk*(.4 + .4*Math.sin(t*3 + k))})`; ctx.beginPath(); ctx.arc(fx, fy, 2.2, 0, 7); ctx.fill();
+      }
+    }
+  }
+  for (const p of G.players) drawMarker(p);
+  OX = OX0; OY = OY0;   // HUD and panels don't shake
+  base();
+  for (const tx of G.texts) { ctx.globalAlpha = 1 - tx.life; txt(tx.txt, tx.x, tx.y - tx.life*30, tx.size, tx.col, 'center', 4); }
+  ctx.globalAlpha = 1;
+  drawHUD();
+  if (G.state === 'lobby') drawLobby();
+  else if (G.state === 'count') {
+    const n = 3 - Math.floor(G.countT/(COUNT/3));
+    txt(String(Math.max(1, n)), W/2, H/2 + 20, 120, '#ffe7a0', 'center', 12, 900);
+    txt('Get ready', W/2, H/2 - 70, 30, '#fff', 'center', 6, 800);
+  } else if (G.state === 'play') {
+    if (G.goT < .9) { base(); ctx.globalAlpha = 1 - G.goT/.9; txt('Harvest!', W/2, H/2, 110, '#ffe7a0', 'center', 12, 900); ctx.globalAlpha = 1; }
+    const left = ROUND - G.clock;
+    if (left <= 5 && left > 0) { base(); txt(String(Math.ceil(left)), W/2, SKY_H + 70, 70, '#fff0c0', 'center', 10, 900); }
+  } else if (G.state === 'paused') {
+    panel(440, 260, 400, 180);
+    txt('Paused', W/2, 320, 52, '#ffe7a0', 'center', 0, 900);
+    txt('Start: carry on      View or Q: lobby', W/2, 390, 18, '#fff3dc', 'center', 0, 700);
+  } else if (G.state === 'end') drawEnd();
+  if (G.toast) {
+    base(); const a = clamp(Math.min(G.toast.t/.15, (2.6 - G.toast.t)/.4), 0, 1);
+    ctx.globalAlpha = a; ctx.font = `700 18px ${FONT}`; const tw = ctx.measureText(G.toast.msg).width + 40;
+    ctx.fillStyle = 'rgba(40,26,16,.85)'; rr(ctx, W/2 - tw/2, SKY_H + 10, tw, 38, 19); ctx.fill();
+    txt(G.toast.msg, W/2, SKY_H + 29, 18, '#fff3dc', 'center', 0, 700); ctx.globalAlpha = 1;
+  }
+}
+
+// ---- audio (Web Audio, starts after a click or key; paused while the tab is hidden) ----
+let AC = null, master = null, noiseBuf = null, windGain = null, muted = false, lastPick = 0;
+function unlockAudio(){
+  try {
+    if (!AC) {
+      AC = new (window.AudioContext || window.webkitAudioContext)();
+      master = AC.createGain(); master.gain.value = .6; master.connect(AC.destination);
+      noiseBuf = AC.createBuffer(1, AC.sampleRate*2, AC.sampleRate);
+      const d = noiseBuf.getChannelData(0); for (let i=0; i<d.length; i++) d[i] = Math.random()*2 - 1;
+      const src = AC.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+      const lp = AC.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 420;
+      windGain = AC.createGain(); windGain.gain.value = muted ? 0 : .025;
+      src.connect(lp).connect(windGain).connect(master); src.start();
+    }
+    if (AC.state === 'suspended' && !document.hidden) AC.resume();
+  } catch(e) {}
+}
+addEventListener('pointerdown', () => { unlockAudio(); wake(); });
+const live = () => AC && AC.state === 'running' && !muted;
+function tone(freq, dur, type='sine', vol=.2, slideTo=null, delay=0){
+  if (!live()) return;
+  const t = AC.currentTime + delay, o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t); if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t+dur);
+  g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(vol, t+.008); g.gain.exponentialRampToValueAtTime(.0001, t+dur);
+  o.connect(g).connect(master); o.start(t); o.stop(t+dur+.03);
+}
+function noise(dur, f0, f1, vol=.2, q=1.2, delay=0){
+  if (!live()) return;
+  const t = AC.currentTime + delay, src = AC.createBufferSource(), bp = AC.createBiquadFilter(), g = AC.createGain();
+  src.buffer = noiseBuf; bp.type = 'bandpass'; bp.Q.value = q;
+  bp.frequency.setValueAtTime(f0, t); bp.frequency.exponentialRampToValueAtTime(f1, t+dur);
+  g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(vol, t+.01); g.gain.exponentialRampToValueAtTime(.0001, t+dur);
+  src.connect(bp).connect(g).connect(master); src.start(t, Math.random()); src.stop(t+dur+.03);
+}
+const sfxSlash = (n, swing=0) => {
+  noise(swing === 2 ? .26 : .14, 3000 + swing*500, 650, swing === 2 ? .2 : .16);
+  if (n) { sfxCrunch(n); if (n >= 6) tone(140 - swing*15, .1, 'sine', .14, 55); }
+};
+const sfxCrunch = n => { noise(.09, rand(4600, 5600), 2300, .05 + Math.min(n, 15)*.006, 2); if (n > 3) noise(.06, 7000, 4000, .03, 3, .03); };
+const sfxSkid = () => noise(.16, 1100, 450, .07, 1.5);
+const sfxThrow = ch => noise(.35, 600, 2400 + ch*1200, .14, 2);
+const sfxTink = () => tone(1800, .06, 'triangle', .06);
+const sfxCatch = () => { tone(1320, .08, 'triangle', .1); tone(1980, .1, 'sine', .07, null, .03); };
+const sfxBonk = () => tone(240, .2, 'square', .07, 80);
+const sfxJoin = () => { tone(784, .08, 'triangle', .1); tone(1175, .14, 'triangle', .1, null, .07); };
+const sfxQuack = () => { tone(430, .13, 'sawtooth', .045, 250); tone(415, .1, 'sawtooth', .03, 260, .15); };
+function sfxPick(combo, gold){
+  if (!live()) return;
+  const now = AC.currentTime; if (now - lastPick < .025) return; lastPick = now;
+  const scale = [0,2,4,7,9], st = Math.min(combo-1, 14), semis = scale[st%5] + 12*Math.floor(st/5);
+  tone(523.25*2**(semis/12), .07, 'sine', .08);
+  if (gold) [0,4,7,12].forEach((s, i) => tone(784*2**(s/12), .12, 'triangle', .08, null, i*.06));
+}
+function sfxFanfare(){ [0,4,7,12,16].forEach((s, i) => tone(523.25*2**(s/12), .3, 'triangle', .1, null, i*.11)); }
+function gustSound(){
+  if (!live() || !windGain) return;
+  const t = AC.currentTime;
+  windGain.gain.cancelScheduledValues(t); windGain.gain.setValueAtTime(windGain.gain.value, t);
+  windGain.gain.linearRampToValueAtTime(.07, t+1.2); windGain.gain.linearRampToValueAtTime(.025, t+3.5);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (G.state === 'play') pause(true); if (AC) AC.suspend(); }
+  else if (AC) AC.resume();
+});
+
+// ---- full screen, idle cursor -----------------------------------------------------
+const fsBtn = document.getElementById('fs');
+function toggleFullscreen(){
+  unlockAudio();
+  if (document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+  else document.documentElement.requestFullscreen().catch(()=>{});
+}
+fsBtn.addEventListener('click', e => { e.stopPropagation(); toggleFullscreen(); });
+let idleT = 0;
+function wake(){ idleT = 0; document.body.classList.remove('idle'); }
+addEventListener('pointermove', wake);
+
+// ---- loop + test hook ---------------------------------------------------------------
+let last = performance.now();
+function frame(now){
+  requestAnimationFrame(frame);
+  if (cv.width !== Math.round(innerWidth*Math.min(2, devicePixelRatio || 1))) resize();
+  const dt = Math.min(1/30, (now - last)/1000); last = now;
+  idleT += dt; if (idleT > 3) document.body.classList.add('idle');
+  if (!G.manual) update(dt);
+  draw();
+}
+resize(); toLobby();
+requestAnimationFrame(frame);
+
+window.__harvest = {
+  G, N, get tall(){ return tallCount; },
+  join, addBot, start: beginRound, lobby: toLobby, startPressed,
+  manual(on){ G.manual = !!on; },
+  step(n=1){ for (let k=0; k<n; k++) update(1/60); draw(); },
+};
+</script>
+</body>
+</html>
